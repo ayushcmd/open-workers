@@ -25,7 +25,7 @@ The deployed production environment exposes these verified canonical endpoints:
 | **Status / Health URL** | `https://open-workers.onrender.com/api/health` | Returns `200 OK` JSON readiness status and catalog count |
 | **Documentation URL** | `https://github.com/ayushcmd/open-workers#readme` | Complete repository documentation and development guide |
 | **Company / Organization URL**| `https://github.com/ayushcmd/open-workers` | GitHub repository and author organization URL |
-| **App Installation URL** | `https://github.com/apps/open-license-advisor` | Actual registered GitHub App installation page |
+| **App Installation URL** | `https://github.com/apps/open-workers` | Verified registered GitHub App installation page |
 | **Setup / Configuration URL**| `https://open-workers.onrender.com/app-install.html` | Guides repository selection and automated PR preview |
 | **Webhook URL** | `https://open-workers.onrender.com/api/webhooks` | HTTPS webhook endpoint verified via `X-Hub-Signature-256` |
 

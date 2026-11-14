@@ -7,15 +7,15 @@
 
   [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-Open%20Workers-2DA44E?style=flat-square&logo=github&logoColor=white)](https://github.com/marketplace/open-workers)
   [![Live Web App](https://img.shields.io/badge/Live%20App-open--workers.onrender.com-24292F?style=flat-square&logo=render&logoColor=white)](https://open-workers.onrender.com)
-  [![GitHub App](https://img.shields.io/badge/GitHub%20App-open--license--advisor-0969DA?style=flat-square&logo=github&logoColor=white)](https://github.com/apps/open-license-advisor)
+  [![GitHub App](https://img.shields.io/badge/GitHub%20App-open--workers-0969DA?style=flat-square&logo=github&logoColor=white)](https://github.com/apps/open-workers)
   [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](./LICENSE)
   [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-339933.svg?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
-  [![Tests](https://img.shields.io/badge/Tests-243%20Passing-2DA44E.svg?style=flat-square&logo=githubactions&logoColor=white)](./tests)
+  [![Tests](https://img.shields.io/badge/Tests-261%20Passing-2DA44E.svg?style=flat-square&logo=githubactions&logoColor=white)](./tests)
 
   <p align="center">
     <a href="https://open-workers.onrender.com"><strong>Launch Web App</strong></a> &bull;
     <a href="https://github.com/marketplace/open-workers"><strong>Marketplace Listing</strong></a> &bull;
-    <a href="https://github.com/apps/open-license-advisor"><strong>Install GitHub App</strong></a> &bull;
+    <a href="https://github.com/apps/open-workers"><strong>Install GitHub App</strong></a> &bull;
     <a href="#quick-start"><strong>Quick Start</strong></a> &bull;
     <a href="#api-overview"><strong>API Overview</strong></a> &bull;
     <a href="./docs/ARCHITECTURE_REVIEW.md"><strong>Architecture</strong></a>
@@ -303,7 +303,7 @@ Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
 
 ## GitHub App Integration
 
-Open Workers operates as a least-privilege GitHub App (`open-license-advisor[bot]`).
+Open Workers operates as a least-privilege GitHub App (`open-workers[bot]`, with backward-compatibility recognition for `open-license-advisor[bot]`).
 
 ### Scoped Permissions
 
@@ -398,7 +398,7 @@ Open Workers is designed from the ground up with a privacy-preserving, zero-rete
 - **Production Web Application:** [https://open-workers.onrender.com](https://open-workers.onrender.com)
 - **GitHub Marketplace Listing:** [https://github.com/marketplace/open-workers](https://github.com/marketplace/open-workers)
 - **GitHub Repository:** [https://github.com/ayushcmd/open-workers](https://github.com/ayushcmd/open-workers)
-- **GitHub App Installation:** [https://github.com/apps/open-license-advisor](https://github.com/apps/open-license-advisor)
+- **GitHub App Installation:** [https://github.com/apps/open-workers](https://github.com/apps/open-workers)
 - **Documentation Index:** [docs/](file:///c:/Projects/AYUSHCMD-GITHUB/open-workers/docs/)
   - [Project Status](./docs/PROJECT_STATUS.md)
   - [Feature Matrix](./docs/FEATURE_MATRIX.md)
