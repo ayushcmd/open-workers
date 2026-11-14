@@ -45,3 +45,38 @@ it('preserves custom license and attribution text rather than deleting it', () =
   const updated = updateReadmeLicense(original, apache, 'both');
   assert.ok(updated.includes(original));
 });
+
+it('recognizes and replaces legacy license-advisor and open-license-advisor markers with open-workers markers', () => {
+  const legacyContent = [
+    '<!-- license-advisor:top:start -->',
+    '[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)',
+    '<!-- license-advisor:top:end -->',
+    '',
+    '# Legacy Project',
+    '',
+    'Description of project.',
+    '',
+    '<!-- license-advisor:bottom:start -->',
+    '## License',
+    '',
+    'Licensed under [MIT License](LICENSE).',
+    '<!-- license-advisor:bottom:end -->',
+    ''
+  ].join('\n');
+
+  const updated = updateReadmeLicense(legacyContent, apache, 'both', 'LICENSE');
+
+  // Verify legacy markers were replaced completely
+  assert.strictEqual(updated.includes('<!-- license-advisor:'), false);
+  // Verify canonical open-workers markers are present
+  assert.ok(updated.includes('<!-- open-workers:top:start -->'));
+  assert.ok(updated.includes('<!-- open-workers:top:end -->'));
+  assert.ok(updated.includes('<!-- open-workers:bottom:start -->'));
+  assert.ok(updated.includes('<!-- open-workers:bottom:end -->'));
+  assert.ok(updated.includes('# Legacy Project'));
+  assert.ok(updated.includes('Description of project.'));
+
+  // Verify no duplicate ## License sections
+  const licenseHeaders = (updated.match(/## License/g) || []).length;
+  assert.strictEqual(licenseHeaders, 1);
+});
