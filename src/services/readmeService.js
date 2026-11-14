@@ -20,6 +20,6 @@ export async function prepareReadmeUpdate(octokit, { owner, repo, ref, license, 
   return {
     path: filename, sha: file?.sha, content, changed: content !== original,
     // Preserve custom attribution and flag it for review instead of rewriting it.
-    reviewExisting: /licen[cs]e|shields\.io\/badge\/licen[cs]e/i.test(original.replace(/<!-- license-advisor:(top|bottom):start -->[\s\S]*?<!-- license-advisor:\1:end -->/g, ''))
+    reviewExisting: /licen[cs]e|shields\.io\/badge\/licen[cs]e/i.test(original.replace(/<!-- (?:open-workers|license-advisor|open-license-advisor):(top|bottom):start -->[\s\S]*?<!-- (?:open-workers|license-advisor|open-license-advisor):\1:end -->/g, ''))
   };
 }

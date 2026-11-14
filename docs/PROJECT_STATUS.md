@@ -26,7 +26,7 @@ Following the repository rename from `license-advisor` to `open-workers` and com
 | **GitHub Repository** | [`ayushcmd/open-workers`](https://github.com/ayushcmd/open-workers) | **Active** | Remote origin tracking `origin/main`. |
 | **Production Web App** | [`open-workers.onrender.com`](https://open-workers.onrender.com) | **Active** | Render cloud hosting with keep-alive health check. |
 | **GitHub Marketplace** | [`marketplace/open-workers`](https://github.com/marketplace/open-workers) | **Active** | Free tier developer tool listing. |
-| **GitHub App (Production)** | `open-license-advisor[bot]` | **Active** | Configured with least-privilege scopes (`contents: write`, `pull_requests: write`). App slug in `.env.example`. |
+| **GitHub App (Production)** | `open-workers[bot]` | **Active** | Configured with least-privilege scopes (`contents: write`, `pull_requests: write`). App slug `open-workers` (with `open-license-advisor[bot]` retained for event idempotency). |
 | **Database Architecture** | *Stateless (Zero-Database)* | **Active** | No persistent storage; caller tokens verified in-memory. |
 
 ---

@@ -55,7 +55,7 @@ describe('GitHub App Credential Loading & Graceful Fallback', () => {
     const envCtx = createGitHubContext(
       {
         GITHUB_APP_ID: '98765',
-        GITHUB_APP_SLUG: 'demo-license-advisor',
+        GITHUB_APP_SLUG: 'demo-custom-slug',
         GITHUB_PRIVATE_KEY: escaped,
         GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET
       },
@@ -65,7 +65,7 @@ describe('GitHub App Credential Loading & Graceful Fallback', () => {
     assert.equal(envCtx.isAppConfigured, true);
     assert.equal(envCtx.isWebhookConfigured, true);
     assert.equal(envCtx.keySource, 'env');
-    assert.equal(envCtx.getInstallationUrl(), 'https://github.com/apps/demo-license-advisor/installations/new');
+    assert.equal(envCtx.getInstallationUrl(), 'https://github.com/apps/demo-custom-slug/installations/new');
 
     const tmpPem = path.join(os.tmpdir(), `test-gh-app-${Date.now()}.pem`);
     fs.writeFileSync(tmpPem, privateKey, 'utf8');
@@ -97,7 +97,7 @@ describe('Express Server, Security Headers, Static Assets & Public API', () => {
     const started = await startTestServer({
       env: {
         APP_URL: 'http://localhost:3000',
-        GITHUB_APP_SLUG: 'license-advisor',
+        GITHUB_APP_SLUG: 'open-workers',
         GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET
       }
     });

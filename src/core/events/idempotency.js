@@ -46,7 +46,12 @@ export function isBotSender(sender) {
   if (!sender || typeof sender !== 'object') return false;
   if (sender.type === 'Bot') return true;
   const login = String(sender.login || '').toLowerCase();
-  if (login.endsWith('[bot]') || login.includes('open-workers') || login === 'open-license-advisor[bot]') {
+  if (
+    login.endsWith('[bot]') ||
+    login.includes('open-workers') ||
+    login === 'open-license-advisor[bot]' ||
+    login === 'license-advisor[bot]'
+  ) {
     return true;
   }
   return false;

@@ -8,7 +8,7 @@ Follow these steps to register and connect **Open Workers** as a least-privilege
 
 1. Open GitHub **Settings** &rarr; **Developer settings** &rarr; **GitHub Apps** &rarr; **New GitHub App** (or under your Organization's Developer settings).
 2. Configure **Basic Information**:
-   - **GitHub App name:** `Open Workers` (must be globally unique on GitHub; record the resulting slug as `GITHUB_APP_SLUG`, currently registered as `open-license-advisor`)
+   - **GitHub App name:** `Open Workers` (registered slug: `open-workers`)
    - **Description:** Multi-purpose GitHub automation suite for licensing, community standards, security, documentation, and repository governance.
    - **Homepage URL:** `https://open-workers.onrender.com`
    - **Setup URL:** `https://open-workers.onrender.com/app-install.html`
@@ -66,7 +66,7 @@ Click **Create GitHub App**, then note the **App ID** shown at the top of the Ge
 Move the `.pem` file into the project root (or a secure local directory) and set:
 ```dotenv
 GITHUB_APP_ID=123456
-GITHUB_APP_SLUG=open-license-advisor
+GITHUB_APP_SLUG=open-workers
 GITHUB_WEBHOOK_SECRET=your_generated_hex_secret
 GITHUB_PRIVATE_KEY_PATH=./open-workers.private-key.pem
 ```
@@ -75,7 +75,7 @@ GITHUB_PRIVATE_KEY_PATH=./open-workers.private-key.pem
 Encode the private key with escaped newlines (`\n`) for environment variables:
 ```dotenv
 GITHUB_APP_ID=123456
-GITHUB_APP_SLUG=open-license-advisor
+GITHUB_APP_SLUG=open-workers
 GITHUB_WEBHOOK_SECRET=your_generated_hex_secret
 GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----"
 ```

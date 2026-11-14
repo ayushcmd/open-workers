@@ -105,11 +105,11 @@ function createMockInstallationOctokit(overrides = {}) {
 function createMockGitHubContext({ installed = true, permissions, octokit, publicOctokit } = {}) {
   return {
     appId: '12345',
-    appSlug: 'license-advisor',
+    appSlug: 'open-workers',
     webhookSecret: 'secret',
     isAppConfigured: true,
     isWebhookConfigured: true,
-    getInstallationUrl: () => 'https://github.com/apps/license-advisor/installations/new',
+    getInstallationUrl: () => 'https://github.com/apps/open-workers/installations/new',
     async resolveRepoInstallation() {
       if (!installed) {
         return { installed: false, installation: null, octokit: null };

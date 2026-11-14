@@ -1,6 +1,6 @@
 {
   "name": "open-workers",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "Multi-purpose GitHub automation assistant for licensing, community standards, security policies, documentation, and repository maintenance.",
   "type": "module",
   "license": "Apache-2.0",

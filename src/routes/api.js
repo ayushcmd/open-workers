@@ -581,11 +581,12 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
   router.get('/config', (_req, res) => {
     res.json({
       appName: 'Open Workers',
-      appSlug: githubContext?.appSlug || 'open-license-advisor',
+      appSlug: githubContext?.appSlug || 'open-workers',
+      version: '2.0.0',
       appUrl,
       installUrl: githubContext?.getInstallationUrl
         ? githubContext.getInstallationUrl()
-        : 'https://github.com/apps/open-license-advisor/installations/new',
+        : 'https://github.com/apps/open-workers/installations/new',
       githubAppConfigured: Boolean(githubContext?.isAppConfigured),
       webhookConfigured: Boolean(githubContext?.isWebhookConfigured),
       planTier: 'free',
