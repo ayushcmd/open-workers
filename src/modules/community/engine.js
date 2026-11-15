@@ -46,7 +46,7 @@ const definitions = [
     field('expectedBehavior', 'Expected behavior', 'textarea', false, 'A clear description of what you expected to happen.'),
     field('environment', 'Environment details', 'textarea', false, 'OS: \nBrowser / Runtime: \nVersion: '),
     field('additionalContext', 'Additional context', 'textarea', false, '')],
-    render: (v) => `---\nname: Bug Report\nabout: ${v.about}\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n## Description\n\n${v.description}\n\n## Steps to Reproduce\n\n${v.reproductionSteps}\n\n` + section('Expected Behavior', v.expectedBehavior) + section('Environment', v.environment) + section('Additional Context', v.additionalContext)
+    render: (v) => `---\nname: Bug Report\nabout: '${v.about}'\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n## Description\n\n${v.description}\n\n## Steps to Reproduce\n\n${v.reproductionSteps}\n\n` + section('Expected Behavior', v.expectedBehavior) + section('Environment', v.environment) + section('Additional Context', v.additionalContext)
   },
   { id: 'issue-feature-request', name: 'Feature Request Issue Template', filename: '.github/ISSUE_TEMPLATE/feature_request.md', category: 'issue-template', version: '1.0', fields: [
     yamlField('issueTitle', 'Issue title prefix', true, '[FEATURE] '),
@@ -56,7 +56,7 @@ const definitions = [
     field('proposedSolution', 'Proposed solution', 'textarea', true, 'A clear description of what you want to happen.'),
     field('alternativesConsidered', 'Alternatives considered', 'textarea', false, ''),
     field('additionalContext', 'Additional context', 'textarea', false, '')],
-    render: (v) => `---\nname: Feature Request\nabout: ${v.about}\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n## Problem Statement\n\n${v.problemStatement}\n\n## Proposed Solution\n\n${v.proposedSolution}\n\n` + section('Alternatives Considered', v.alternativesConsidered) + section('Additional Context', v.additionalContext)
+    render: (v) => `---\nname: Feature Request\nabout: '${v.about}'\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n## Problem Statement\n\n${v.problemStatement}\n\n## Proposed Solution\n\n${v.proposedSolution}\n\n` + section('Alternatives Considered', v.alternativesConsidered) + section('Additional Context', v.additionalContext)
   },
   { id: 'issue-documentation', name: 'Documentation Issue Template', filename: '.github/ISSUE_TEMPLATE/documentation.md', category: 'issue-template', version: '1.0', fields: [
     yamlField('issueTitle', 'Issue title prefix', true, '[DOCS] '),
@@ -66,7 +66,7 @@ const definitions = [
     field('problemDescription', 'Problem description', 'textarea', true, 'What is unclear, incorrect, or missing in the current documentation?'),
     field('suggestedImprovement', 'Suggested improvement', 'textarea', false, 'How can the documentation be improved?'),
     field('additionalContext', 'Additional context', 'textarea', false, '')],
-    render: (v) => `---\nname: Documentation Improvement\nabout: ${v.about}\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n` + section('Affected Documentation', v.docLocation) + `## Problem Description\n\n${v.problemDescription}\n\n` + section('Suggested Improvement', v.suggestedImprovement) + section('Additional Context', v.additionalContext)
+    render: (v) => `---\nname: Documentation Improvement\nabout: '${v.about}'\ntitle: '${v.issueTitle}'\nlabels: '${v.labels}'\nassignees: ''\n---\n\n` + section('Affected Documentation', v.docLocation) + `## Problem Description\n\n${v.problemDescription}\n\n` + section('Suggested Improvement', v.suggestedImprovement) + section('Additional Context', v.additionalContext)
   },
   { id: 'pull-request-template', name: 'Pull Request Template', filename: '.github/PULL_REQUEST_TEMPLATE.md', category: 'pr-template', version: '1.0', fields: [
     field('summary', 'Change summary', 'textarea', true, 'A concise summary of changes introduced in this pull request.'),
