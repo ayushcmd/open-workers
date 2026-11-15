@@ -1,5 +1,7 @@
 <div align="center">
-  <img src="./public/assets/open-workers-logo.png" alt="Open Workers Logo" width="160">
+  <a href="https://open-workers.onrender.com">
+    <img src="./public/assets/open-workers-banner.png" alt="Open Workers — One GitHub App. Multiple Capabilities." width="100%">
+  </a>
 
   # Open Workers
 
@@ -10,7 +12,7 @@
   [![GitHub App](https://img.shields.io/badge/GitHub%20App-open--workers-0969DA?style=flat-square&logo=github&logoColor=white)](https://github.com/apps/open-workers)
   [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=flat-square)](./LICENSE)
   [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-339933.svg?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
-  [![Tests](https://img.shields.io/badge/Tests-261%20Passing-2DA44E.svg?style=flat-square&logo=githubactions&logoColor=white)](./tests)
+  [![Tests](https://img.shields.io/badge/Tests-268%20Passing-2DA44E.svg?style=flat-square&logo=githubactions&logoColor=white)](./tests)
 
   <p align="center">
     <a href="https://open-workers.onrender.com"><strong>Launch Web App</strong></a> &bull;
