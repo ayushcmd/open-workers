@@ -107,8 +107,17 @@ export async function prepareReadmeUpdate(
   const filename = readmeData.path;
   const original = readmeData.content;
 
-  // Enforce expected SHA to prevent stale overwrites
-  if (expectedSha !== undefined && expectedSha !== null) {
+  // Enforce expected SHA to prevent stale overwrites and missing-file races
+  if (expectedSha === null) {
+    if (readmeData.exists) {
+      throw new ServiceError(
+        409,
+        'Repository README file was created concurrently since it was inspected. Refresh before proceeding.',
+        'README_STALE',
+        { expectedSha: null, actualSha: readmeData.sha }
+      );
+    }
+  } else if (expectedSha !== undefined) {
     if (readmeData.exists && readmeData.sha !== expectedSha) {
       throw new ServiceError(
         409,

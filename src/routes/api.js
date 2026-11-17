@@ -689,6 +689,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
         expectedReadmeSha: req.body?.expectedReadmeSha,
         expectedReadmeContent: req.body?.expectedReadmeContent,
         expectedLicenseSha: req.body?.expectedLicenseSha,
+        previewToken: req.body?.previewToken,
         confirmed: req.body?.confirmed,
         githubContext
       });

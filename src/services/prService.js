@@ -13,6 +13,7 @@ import { commitFiles } from '../core/pullRequests/files.js';
 import { inspectRootEntries } from '../../public/js/analyzer.js';
 import { ServiceError, validatePrRequest } from './licenseService.js';
 import { authorizeRepositoryRead } from '../core/github/authorize.js';
+import { createPreviewToken, verifyPreviewToken, computeContentHash } from '../core/licensing/previewToken.js';
 import {
   README_PLACEMENTS,
   generateUnifiedDiff,
@@ -317,13 +318,14 @@ export async function previewLicensePullRequest({
       name: licensePackage.name,
       action: replaceExisting ? 'replace' : 'add',
       path: existingLicensePath || licensePackage.filename,
-      sha: existingLicenseSha,
+      sha: existingLicenseSha ?? null,
+      exists: Boolean(existingLicensePath),
       content: licensePackage.content
     },
     readme: {
       exists: readmeData.exists,
       path: readmeData.path,
-      sha: readmeData.sha,
+      sha: readmeData.sha ?? null,
       originalContent: readmeData.content,
       proposedContent: proposedReadme,
       changed: readmeChanged,
@@ -331,7 +333,21 @@ export async function previewLicensePullRequest({
       inspection: readmeInspection
     },
     conflicts,
-    warnings
+    warnings,
+    previewToken: createPreviewToken({
+      repo: fullName,
+      licenseId: validated.licenseId,
+      replaceExisting,
+      readmePlacement,
+      badgeAction: badgeAction || null,
+      sectionAction: sectionAction || null,
+      readmeSha: readmeData.sha ?? null,
+      readmeExists: readmeData.exists,
+      licenseSha: existingLicenseSha ?? null,
+      licenseExists: Boolean(existingLicensePath),
+      proposedReadmeHash: computeContentHash(proposedReadme),
+      customReadmeHash: typeof customReadmeContent === 'string' ? computeContentHash(customReadmeContent) : null
+    }, githubContext?.sessionSecret)
   };
 }
 
@@ -354,6 +370,7 @@ export async function createLicensePullRequest({
   expectedReadmeSha,
   expectedReadmeContent,
   expectedLicenseSha,
+  previewToken,
   confirmed,
   githubContext
 }) {
@@ -369,7 +386,8 @@ export async function createLicensePullRequest({
     sectionAction ||
     customReadmeContent !== undefined ||
     expectedReadmeSha !== undefined ||
-    expectedReadmeContent !== undefined
+    expectedReadmeContent !== undefined ||
+    previewToken !== undefined
   );
 
   if (confirmed === false || (isReadmeWorkflow && confirmed !== true)) {
@@ -381,6 +399,75 @@ export async function createLicensePullRequest({
   }
   const validated = validatePrRequest({ repo: repoInput, licenseId, year, holder });
   const { owner, repo, fullName, explanation, licensePackage } = validated;
+
+  let tokenPayload = null;
+  if (isReadmeWorkflow) {
+    if (!previewToken) {
+      throw new ServiceError(
+        400,
+        'A valid preview token is required before creating a pull request. Inspect and preview changes first.',
+        'PREVIEW_REQUIRED'
+      );
+    }
+    const verification = verifyPreviewToken(previewToken, githubContext?.sessionSecret);
+    if (!verification.valid) {
+      throw new ServiceError(
+        400,
+        `The preview session has expired or is invalid (${verification.reason}). Re-inspect and confirm changes before proceeding.`,
+        'PREVIEW_EXPIRED',
+        { reason: verification.reason }
+      );
+    }
+    tokenPayload = verification.payload;
+
+    if (tokenPayload.repo !== fullName) {
+      throw new ServiceError(409, 'Preview token was issued for a different repository.', 'PREVIEW_MISMATCH', { reason: 'REPO_MISMATCH' });
+    }
+    if (tokenPayload.licenseId !== validated.licenseId) {
+      throw new ServiceError(409, 'Preview token was issued for a different license.', 'PREVIEW_MISMATCH', { reason: 'LICENSE_MISMATCH' });
+    }
+    if (tokenPayload.replaceExisting !== replaceExisting) {
+      throw new ServiceError(409, 'Preview token does not match the requested license action.', 'PREVIEW_MISMATCH', { reason: 'ACTION_MISMATCH' });
+    }
+    if (tokenPayload.badgeAction !== (badgeAction || null)) {
+      throw new ServiceError(409, 'Preview token does not match the selected badge action.', 'PREVIEW_MISMATCH', { reason: 'BADGE_ACTION_MISMATCH' });
+    }
+    if (tokenPayload.sectionAction !== (sectionAction || null)) {
+      throw new ServiceError(409, 'Preview token does not match the selected section action.', 'PREVIEW_MISMATCH', { reason: 'SECTION_ACTION_MISMATCH' });
+    }
+
+    // Require expected README and LICENSE state explicitly (do not allow omitted values to bypass checks)
+    if (expectedReadmeSha === undefined) {
+      throw new ServiceError(
+        400,
+        'Expected README state (expectedReadmeSha) is required for concurrency verification.',
+        'MISSING_EXPECTED_STATE',
+        { field: 'expectedReadmeSha' }
+      );
+    }
+    if (expectedLicenseSha === undefined) {
+      throw new ServiceError(
+        400,
+        'Expected LICENSE state (expectedLicenseSha) is required for concurrency verification.',
+        'MISSING_EXPECTED_STATE',
+        { field: 'expectedLicenseSha' }
+      );
+    }
+
+    if (tokenPayload.readmeExists && expectedReadmeSha !== tokenPayload.readmeSha) {
+      throw new ServiceError(409, 'Expected README SHA does not match preview token.', 'PREVIEW_MISMATCH', { reason: 'README_SHA_MISMATCH' });
+    }
+    if (!tokenPayload.readmeExists && expectedReadmeSha !== null && expectedReadmeSha !== '') {
+      throw new ServiceError(409, 'README was previewed as missing, but an unexpected SHA was provided.', 'PREVIEW_MISMATCH', { reason: 'README_EXISTENCE_MISMATCH' });
+    }
+
+    if (tokenPayload.licenseExists && expectedLicenseSha !== tokenPayload.licenseSha) {
+      throw new ServiceError(409, 'Expected LICENSE SHA does not match preview token.', 'PREVIEW_MISMATCH', { reason: 'LICENSE_SHA_MISMATCH' });
+    }
+    if (!tokenPayload.licenseExists && expectedLicenseSha !== null && expectedLicenseSha !== '') {
+      throw new ServiceError(409, 'LICENSE was previewed as missing, but an unexpected SHA was provided.', 'PREVIEW_MISMATCH', { reason: 'LICENSE_EXISTENCE_MISMATCH' });
+    }
+  }
 
   if (!githubContext?.isAppConfigured || typeof githubContext.resolveRepoInstallation !== 'function') {
     throw new ServiceError(
@@ -527,6 +614,18 @@ export async function createLicensePullRequest({
     expectedSha: expectedReadmeSha
   });
 
+  if (tokenPayload) {
+    const currentProposedHash = computeContentHash(readmeUpdate?.content ?? '');
+    if (currentProposedHash !== tokenPayload.proposedReadmeHash) {
+      throw new ServiceError(
+        409,
+        'Proposed README changes do not match the confirmed preview. Re-review before proceeding.',
+        'PREVIEW_MISMATCH',
+        { reason: 'CONTENT_HASH_MISMATCH' }
+      );
+    }
+  }
+
   if (expectedReadmeContent !== undefined && expectedReadmeContent !== null) {
     const actualProposed = readmeUpdate?.content ?? '';
     if (actualProposed !== expectedReadmeContent) {
@@ -534,10 +633,7 @@ export async function createLicensePullRequest({
         409,
         'Proposed README content does not match the reviewed and confirmed preview. Re-review before proceeding.',
         'PREVIEW_CONTENT_MISMATCH',
-        {
-          expectedContent: expectedReadmeContent,
-          actualContent: actualProposed
-        }
+        { reason: 'CONTENT_MISMATCH' }
       );
     }
   }

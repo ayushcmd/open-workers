@@ -1141,6 +1141,28 @@ function initAppInstallPage() {
   let proposedReadmeContent = '';
   let guidedProposalContent = '';
   let previewDebounceTimer = null;
+  let previewSequence = 0;
+  let verifiedPreview = null;
+  let inspectionError = null;
+
+  function renderInspectionFailure(errorMsg) {
+    if (renderedPreview) {
+      clearNode(renderedPreview);
+      renderedPreview.appendChild(
+        el('p', { className: 'text-muted' }, [
+          el('em', {}, `Actual repository preview unavailable: inspection failed (${errorMsg}).`)
+        ])
+      );
+    }
+    if (proposedPreview) {
+      proposedPreview.textContent = `(Inspection failed: ${errorMsg})\nActual repository README could not be inspected. PR creation is disabled until inspection succeeds.`;
+    }
+    if (originalPreview) {
+      originalPreview.textContent = `(Inspection failed: ${errorMsg})`;
+    }
+    renderDiffView([]);
+    updateFilesList([]);
+  }
 
   function switchTab(activeTab) {
     const tabs = [
@@ -1337,12 +1359,30 @@ function initAppInstallPage() {
 
   async function fetchBackendPreview() {
     const repoVal = repoInput?.value?.trim();
-    if (!repoVal || !repoVal.includes('/')) return;
+    if (!repoVal || !repoVal.includes('/')) {
+      verifiedPreview = null;
+      if (confirmReview) confirmReview.disabled = true;
+      return;
+    }
+
+    const currentSeq = ++previewSequence;
+    if (inspectionBox) {
+      inspectionBox.className = 'flash flash-info text-small';
+      inspectionBox.textContent = `Inspecting ${repoVal} on GitHub...`;
+      inspectionBox.hidden = false;
+    }
 
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      const manualToken = tokenInput ? tokenInput.value.trim() : '';
+      if (manualToken) {
+        headers.Authorization = `Bearer ${manualToken}`;
+      }
+
       const res = await fetch('/api/preview-pr', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        headers,
         body: JSON.stringify({
           repo: repoVal,
           licenseId: licenseSelect.value,
@@ -1355,26 +1395,51 @@ function initAppInstallPage() {
         })
       });
 
-      if (!res.ok) return;
-      const data = await res.json();
+      // Prevent stale asynchronous preview responses from overwriting newer selections
+      if (currentSeq !== previewSequence) return;
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        verifiedPreview = null;
+        inspectionError = data.error || `Inspection failed (${res.status})`;
+
+        if (inspectionBox) {
+          inspectionBox.className = 'flash flash-error text-small';
+          inspectionBox.textContent = `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`;
+          inspectionBox.hidden = false;
+        }
+        if (conflictBox) conflictBox.hidden = true;
+        if (confirmReview) {
+          confirmReview.checked = false;
+          confirmReview.disabled = true;
+        }
+
+        renderInspectionFailure(inspectionError);
+        return;
+      }
+
+      verifiedPreview = data;
+      inspectionError = null;
 
       if (data.readme) {
         originalReadmeContent = data.readme.originalContent || '';
-        originalReadmeSha = data.readme.sha || null;
+        originalReadmeSha = data.readme.sha ?? null;
         if (activeEditorMode === 'guided') {
           proposedReadmeContent = data.readme.proposedContent || '';
           guidedProposalContent = proposedReadmeContent;
+          if (readmeEditor) readmeEditor.value = proposedReadmeContent;
         }
 
         // Inspection banner
         if (inspectionBox) {
+          inspectionBox.className = 'flash flash-success text-small';
           if (data.readme.exists) {
-            inspectionBox.textContent = `README detected: ${data.readme.path} (SHA: ${data.readme.sha?.slice(0, 7) || 'blob'} on branch ${data.defaultBranch || 'main'}).`;
-            inspectionBox.hidden = false;
+            inspectionBox.textContent = `Verified preview: README detected at ${data.readme.path} (SHA: ${data.readme.sha?.slice(0, 7) || 'blob'} on branch ${data.defaultBranch || 'main'}).`;
           } else {
-            inspectionBox.textContent = `No README found on branch ${data.defaultBranch || 'main'}. A new README.md will be created.`;
-            inspectionBox.hidden = false;
+            inspectionBox.textContent = `Verified preview: No README found on branch ${data.defaultBranch || 'main'}. A new README.md will be created.`;
           }
+          inspectionBox.hidden = false;
         }
 
         // Conflict banner
@@ -1389,22 +1454,54 @@ function initAppInstallPage() {
       }
 
       if (data.license) {
-        originalLicenseSha = data.license.sha || null;
+        originalLicenseSha = data.license.sha ?? null;
       }
 
       if (data.files) {
         updateFilesList(data.files);
       }
 
+      if (confirmReview) confirmReview.disabled = false;
       renderLocalPreview();
-    } catch {
-      // Fallback cleanly to local preview
-      renderLocalPreview();
+    } catch (err) {
+      if (currentSeq !== previewSequence) return;
+      verifiedPreview = null;
+      inspectionError = err.message || 'Network error while contacting server';
+
+      if (inspectionBox) {
+        inspectionBox.className = 'flash flash-error text-small';
+        inspectionBox.textContent = `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`;
+        inspectionBox.hidden = false;
+      }
+      if (confirmReview) {
+        confirmReview.checked = false;
+        confirmReview.disabled = true;
+      }
+      renderInspectionFailure(inspectionError);
     }
   }
 
   function schedulePreview() {
-    if (confirmReview) confirmReview.checked = false;
+    // Clear confirmation whenever inspected content, repository, license, or proposed changes change
+    if (confirmReview) {
+      confirmReview.checked = false;
+      confirmReview.disabled = true;
+    }
+    verifiedPreview = null;
+    inspectionError = null;
+
+    const repoVal = repoInput?.value?.trim();
+    if (!repoVal || !repoVal.includes('/')) {
+      if (inspectionBox) {
+        inspectionBox.className = 'flash flash-info text-small';
+        inspectionBox.textContent = 'Illustrative preview · Enter a repository (owner/name) to inspect actual README and files.';
+        inspectionBox.hidden = false;
+      }
+      if (conflictBox) conflictBox.hidden = true;
+      renderLocalPreview();
+      return;
+    }
+
     renderLocalPreview();
     if (window.location.protocol.startsWith('http')) {
       clearTimeout(previewDebounceTimer);
@@ -1418,7 +1515,9 @@ function initAppInstallPage() {
   sectionActionSelect?.addEventListener('change', schedulePreview);
   holderInput?.addEventListener('input', schedulePreview);
   yearInput?.addEventListener('input', schedulePreview);
+  repoInput?.addEventListener('input', schedulePreview);
   repoInput?.addEventListener('blur', schedulePreview);
+  readmeEditor?.addEventListener('input', schedulePreview);
 
   // Initial local preview
   renderLocalPreview();
@@ -1547,6 +1646,16 @@ function initAppInstallPage() {
         return;
       }
 
+      // Enforce verified repository preview
+      if (!verifiedPreview) {
+        triggerStatus.className = 'flash flash-error';
+        triggerStatus.textContent = inspectionError
+          ? `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`
+          : 'Repository inspection is required before creating a pull request. Enter a repository and wait for verified preview.';
+        triggerStatus.hidden = false;
+        return;
+      }
+
       // Check explicit confirmation
       if (confirmReview && !confirmReview.checked) {
         triggerStatus.className = 'flash flash-error';
@@ -1595,9 +1704,10 @@ function initAppInstallPage() {
             badgeAction: badgeActionSelect?.value || 'update_badge',
             sectionAction: sectionActionSelect?.value || 'update_section',
             customReadmeContent: activeEditorMode === 'advanced' ? readmeEditor?.value : undefined,
-            expectedReadmeSha: originalReadmeSha,
+            expectedReadmeSha: verifiedPreview.readme?.sha ?? null,
             expectedReadmeContent: proposedReadmeContent,
-            expectedLicenseSha: originalLicenseSha,
+            expectedLicenseSha: verifiedPreview.license?.sha ?? null,
+            previewToken: verifiedPreview.previewToken,
             confirmed: true
           })
         });
