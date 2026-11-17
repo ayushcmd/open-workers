@@ -17,6 +17,7 @@ import {
 import { generateLicensePackage } from './generator.js';
 import { licenseReadmeSnippets } from './readme.js';
 import { analyzePublicRepository, parseRepoInput } from './analyzer.js';
+import { getAuthStatus, logoutUser } from './auth.js';
 
 const CATEGORY_BADGE_CLASS = Object.freeze({
   permissive: 'badge-permissive',
@@ -1155,6 +1156,69 @@ function initAppInstallPage() {
   yearInput?.addEventListener('input', updatePrPreview);
   updatePrPreview();
 
+  // Manage GitHub user authorization state
+  const authLoading = document.getElementById('pr-auth-loading');
+  const authUnauth = document.getElementById('pr-auth-unauthenticated');
+  const authAuth = document.getElementById('pr-auth-authenticated');
+  const authLogin = document.getElementById('pr-auth-login');
+  const authAvatar = document.getElementById('pr-auth-avatar');
+  const authLogoutBtn = document.getElementById('pr-auth-logout-btn');
+  const authLoginLink = document.getElementById('pr-auth-login-link');
+  const tokenFallback = document.getElementById('pr-token-fallback');
+  const tokenInput = document.getElementById('pr-user-token');
+
+  let currentAuth = null;
+  async function refreshAuth() {
+    if (authLoading) authLoading.hidden = false;
+    if (authUnauth) authUnauth.hidden = true;
+    if (authAuth) authAuth.hidden = true;
+    if (tokenFallback) tokenFallback.hidden = true;
+
+    try {
+      const status = await getAuthStatus();
+      currentAuth = status;
+      if (authLoading) authLoading.hidden = true;
+
+      if (status.authenticated && status.user) {
+        if (authAuth) authAuth.hidden = false;
+        if (authLogin) authLogin.textContent = `@${status.user.login}`;
+        if (authAvatar) {
+          if (status.user.avatarUrl && isSafeHttpUrl(status.user.avatarUrl)) {
+            authAvatar.src = status.user.avatarUrl;
+            authAvatar.alt = `${status.user.login}'s avatar`;
+            authAvatar.hidden = false;
+          } else {
+            authAvatar.hidden = true;
+          }
+        }
+      } else if (status.isOAuthConfigured) {
+        if (authUnauth) authUnauth.hidden = false;
+        if (authLoginLink) {
+          authLoginLink.onclick = () => {
+            const repoVal = repoInput?.value?.trim();
+            const returnUrl = '/app-install.html' + (repoVal ? `?repo=${encodeURIComponent(repoVal)}` : '');
+            authLoginLink.href = `/api/auth/github/login?returnTo=${encodeURIComponent(returnUrl)}`;
+          };
+        }
+      } else {
+        // Fallback for environments where OAuth is not configured
+        if (tokenFallback) tokenFallback.hidden = false;
+      }
+    } catch {
+      if (authLoading) authLoading.hidden = true;
+      if (tokenFallback) tokenFallback.hidden = false;
+    }
+  }
+
+  authLogoutBtn?.addEventListener('click', async () => {
+    await logoutUser();
+    await refreshAuth();
+  });
+
+  if (window.location.protocol.startsWith('http')) {
+    refreshAuth();
+  }
+
   // Check backend availability quietly; surface errors only on actual failure or user action
   let backendReady = false;
   let appConfigured = false;
@@ -1217,19 +1281,35 @@ function initAppInstallPage() {
         return;
       }
 
+      const manualToken = tokenInput ? tokenInput.value.trim() : '';
+      if (tokenInput) tokenInput.value = '';
+
+      if (!currentAuth?.authenticated && !manualToken) {
+        triggerStatus.className = 'flash flash-error';
+        triggerStatus.textContent = currentAuth?.isOAuthConfigured
+          ? 'Please authorize with GitHub to verify repository write access before creating a pull request.'
+          : 'Enter a GitHub user access token to verify repository write access.';
+        triggerStatus.hidden = false;
+        if (authLoginLink && !authUnauth.hidden) authLoginLink.focus();
+        else if (tokenInput && !tokenFallback.hidden) tokenInput.focus();
+        return;
+      }
+
       triggerBtn.disabled = true;
       triggerStatus.className = 'flash flash-info';
       triggerStatus.textContent = 'Creating feature branch and opening Pull Request via GitHub App...';
       triggerStatus.hidden = false;
 
       try {
-        const tokenInput = document.getElementById('pr-user-token');
-        const token = tokenInput.value.trim();
-        tokenInput.value = '';
-        if (!token) throw new Error('Enter a GitHub user access token to verify repository write access.');
+        const headers = { 'Content-Type': 'application/json' };
+        if (manualToken) {
+          headers.Authorization = `Bearer ${manualToken}`;
+        }
+
         const res = await fetch('/api/trigger-pr', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          credentials: 'same-origin',
+          headers,
           body: JSON.stringify({
             repo: repoInput?.value || '',
             licenseId: licenseSelect.value,

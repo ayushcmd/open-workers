@@ -58,11 +58,11 @@ export function createApp(options = {}) {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", 'data:'],
+          imgSrc: ["'self'", 'data:', 'https://avatars.githubusercontent.com', 'https://github.githubassets.com'],
           connectSrc: ["'self'", 'https://api.github.com'],
           objectSrc: ["'none'"],
           baseUri: ["'self'"],
-          formAction: ["'self'"],
+          formAction: ["'self'", 'https://github.com'],
           frameAncestors: ["'none'"]
         }
       },
@@ -101,7 +101,15 @@ export function createApp(options = {}) {
   );
 
   app.use(express.json({ limit: '256kb' }));
-  app.use('/api', createApiRouter({ githubContext, env, createUserClient: options.createUserClient }));
+  app.use(
+    '/api',
+    createApiRouter({
+      githubContext,
+      env,
+      createUserClient: options.createUserClient,
+      fetchFn: options.fetchFn
+    })
+  );
 
   app.use(express.static(PUBLIC_DIR, { extensions: ['html'] }));
 

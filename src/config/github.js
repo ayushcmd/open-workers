@@ -8,6 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { App } from '@octokit/app';
 import { Octokit } from '@octokit/rest';
 
@@ -83,6 +84,8 @@ export function createGitHubContext(env = process.env, options = {}) {
   const appSlug = env.GITHUB_APP_SLUG ? String(env.GITHUB_APP_SLUG).trim() : 'open-workers';
   const webhookSecret = env.GITHUB_WEBHOOK_SECRET ? String(env.GITHUB_WEBHOOK_SECRET).trim() : '';
   const publicToken = env.GITHUB_PUBLIC_TOKEN ? String(env.GITHUB_PUBLIC_TOKEN).trim() : '';
+  const clientId = env.GITHUB_CLIENT_ID ? String(env.GITHUB_CLIENT_ID).trim() : '';
+  const clientSecret = env.GITHUB_CLIENT_SECRET ? String(env.GITHUB_CLIENT_SECRET).trim() : '';
 
   const keyResult = loadPrivateKey({
     privateKey: env.GITHUB_PRIVATE_KEY,
@@ -90,10 +93,21 @@ export function createGitHubContext(env = process.env, options = {}) {
     cwd: options.cwd || process.cwd()
   });
 
+  const rawSessionSecret = env.SESSION_SECRET ? String(env.SESSION_SECRET).trim() : '';
+  const sessionSecret =
+    rawSessionSecret ||
+    crypto
+      .createHmac('sha256', keyResult.key || webhookSecret || 'open-workers-stateless-session')
+      .update('open-workers-user-session-v1')
+      .digest('hex');
+
   const warnings = [];
   if (!appId) warnings.push('GITHUB_APP_ID is not configured.');
   if (keyResult.warning) warnings.push(keyResult.warning);
   if (!webhookSecret) warnings.push('GITHUB_WEBHOOK_SECRET is not configured.');
+  if (!clientId || !clientSecret) {
+    warnings.push('GitHub OAuth (GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET) is not configured.');
+  }
 
   let app = null;
   if (appId && keyResult.key) {
@@ -117,9 +131,13 @@ export function createGitHubContext(env = process.env, options = {}) {
     appId: appId || null,
     appSlug,
     webhookSecret: webhookSecret || null,
+    clientId: clientId || null,
+    clientSecret: clientSecret || null,
+    sessionSecret,
     keySource: keyResult.source,
     isAppConfigured: Boolean(app),
     isWebhookConfigured: Boolean(webhookSecret),
+    isOAuthConfigured: Boolean(clientId && clientSecret),
     warnings,
     app,
 

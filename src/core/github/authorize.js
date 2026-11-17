@@ -6,13 +6,23 @@ import { ServiceError } from '../../services/licenseService.js';
 // repository permission. Never use a caller-supplied login or installation ID.
 export async function authorizeRepositoryWrite({
   authorization,
+  sessionToken,
   repoInput,
   githubContext,
   createUserClient = (token) => new Octokit({ auth: token, log: { debug() {}, info() {}, warn() {}, error() {} } })
 }) {
+  let token = null;
   const match = typeof authorization === 'string' && authorization.match(/^Bearer\s+([A-Za-z0-9_.-]+)$/i);
-  if (!match || match[1].length > 512) {
-    throw new ServiceError(401, 'A GitHub user access token is required to create a pull request.', 'AUTH_REQUIRED');
+  if (match && match[1].length <= 512) {
+    token = match[1];
+  } else if (typeof sessionToken === 'string' && sessionToken.trim() && sessionToken.trim().length <= 512) {
+    token = sessionToken.trim();
+  }
+
+  if (!token) {
+    throw new ServiceError(401, 'A GitHub user access token is required to create a pull request.', 'AUTH_REQUIRED', {
+      authUrl: '/api/auth/github/login'
+    });
   }
   let repository;
   try {
@@ -21,7 +31,7 @@ export async function authorizeRepositoryWrite({
     throw new ServiceError(400, error.message, 'INVALID_INPUT');
   }
   try {
-    const { data: user } = await createUserClient(match[1]).rest.users.getAuthenticated();
+    const { data: user } = await createUserClient(token).rest.users.getAuthenticated();
     if (!user?.login || user.type !== 'User') {
       throw new ServiceError(403, 'A human GitHub user account is required.', 'FORBIDDEN');
     }
@@ -52,14 +62,24 @@ export async function authorizeRepositoryWrite({
  */
 export async function authorizeRepositoryRead({
   authorization,
+  sessionToken,
   repoInput,
   githubContext,
   createUserClient = (token) => new Octokit({ auth: token, log: { debug() {}, info() {}, warn() {}, error() {} } }),
   authCache = null
 }) {
+  let token = null;
   const match = typeof authorization === 'string' && authorization.match(/^Bearer\s+([A-Za-z0-9_.-]+)$/i);
-  if (!match || match[1].length > 512) {
-    throw new ServiceError(401, 'Private repository analysis requires GitHub user authorization.', 'AUTH_REQUIRED');
+  if (match && match[1].length <= 512) {
+    token = match[1];
+  } else if (typeof sessionToken === 'string' && sessionToken.trim() && sessionToken.trim().length <= 512) {
+    token = sessionToken.trim();
+  }
+
+  if (!token) {
+    throw new ServiceError(401, 'Private repository analysis requires GitHub user authorization.', 'AUTH_REQUIRED', {
+      authUrl: '/api/auth/github/login'
+    });
   }
   let repository;
   try {
@@ -68,7 +88,7 @@ export async function authorizeRepositoryRead({
     throw new ServiceError(400, error.message, 'INVALID_INPUT');
   }
 
-  const cacheKey = authCache ? `${repository.fullName}::${match[1]}` : null;
+  const cacheKey = authCache ? `${repository.fullName}::${token}` : null;
   if (cacheKey && authCache.has(cacheKey)) {
     const cached = authCache.get(cacheKey);
     if (cached instanceof Error) throw cached;
@@ -76,7 +96,7 @@ export async function authorizeRepositoryRead({
   }
 
   try {
-    const userClient = createUserClient(match[1]);
+    const userClient = createUserClient(token);
     let username = null;
     if (typeof userClient.rest?.users?.getAuthenticated === 'function') {
       try {
