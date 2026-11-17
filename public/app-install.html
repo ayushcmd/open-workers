@@ -81,17 +81,6 @@
             <span id="pr-action-help" class="form-help">Replacement updates the existing license file in a PR. Review the changes before merging.</span>
           </div>
 
-          <div class="form-group">
-            <label for="pr-readme" class="form-label">Mention in README</label>
-            <select id="pr-readme" class="select" aria-describedby="pr-readme-help">
-              <option value="bottom">Bottom — short license section</option>
-              <option value="top">Top — license badge</option>
-              <option value="both">Both — top badge and bottom section</option>
-              <option value="none">Do not change README</option>
-            </select>
-            <span id="pr-readme-help" class="form-help">Included in the same PR. Existing text stays unchanged. A missing README is created; existing license wording should be reviewed.</span>
-          </div>
-
           <div class="grid-2">
             <div class="form-group">
               <label for="pr-year" class="form-label">Copyright Year</label>
@@ -100,6 +89,56 @@
             <div class="form-group">
               <label for="pr-holder" class="form-label">Copyright Holder</label>
               <input id="pr-holder" type="text" class="input" placeholder="Your Name or Org">
+            </div>
+          </div>
+
+          <!-- Smart README Editor Section -->
+          <div class="form-group stack-sm">
+            <div class="cluster-between">
+              <label class="form-label" style="margin-bottom: 0;">README Customization</label>
+              <div class="segmented-control" role="tablist" aria-label="README Editor Mode">
+                <button type="button" id="pr-mode-guided" class="segmented-btn active" role="tab" aria-selected="true">Guided Editor</button>
+                <button type="button" id="pr-mode-advanced" class="segmented-btn" role="tab" aria-selected="false">Advanced Editor</button>
+              </div>
+            </div>
+
+            <div id="pr-readme-inspection" class="flash flash-info text-small" hidden></div>
+            <div id="pr-readme-conflict" class="flash flash-warning text-small" hidden></div>
+
+            <div id="pr-guided-panel" class="readme-editor-box stack-sm">
+              <div class="form-group">
+                <label for="pr-badge-action" class="form-label text-small">License Badge Placement</label>
+                <select id="pr-badge-action" class="select">
+                  <option value="update_badge">Update existing license badge in place (Recommended)</option>
+                  <option value="insert_badge_group">Insert into existing badge group</option>
+                  <option value="insert_top">Insert near top of README</option>
+                  <option value="none">Do not modify badge</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label for="pr-section-action" class="form-label text-small">License Section Placement</label>
+                <select id="pr-section-action" class="select">
+                  <option value="update_section">Update existing License section in place (Recommended)</option>
+                  <option value="add_section">Add License section at bottom</option>
+                  <option value="keep_section">Keep existing section unchanged</option>
+                  <option value="none">Do not modify section</option>
+                </select>
+              </div>
+
+              <!-- Backward-compatible placement selector (syncs with guided actions) -->
+              <input type="hidden" id="pr-readme" value="both">
+            </div>
+
+            <div id="pr-advanced-panel" class="readme-editor-box stack-sm" hidden>
+              <div class="cluster-between">
+                <span class="text-small text-muted">Edit complete proposed README:</span>
+                <div class="cluster-sm">
+                  <button type="button" id="pr-readme-reset-orig" class="btn btn-sm btn-secondary">Reset to original</button>
+                  <button type="button" id="pr-readme-restore-guided" class="btn btn-sm btn-secondary">Restore Guided proposal</button>
+                </div>
+              </div>
+              <textarea id="pr-readme-advanced-text" class="input" rows="12" spellcheck="false" placeholder="# Project Title..."></textarea>
             </div>
           </div>
 
@@ -139,6 +178,15 @@
               </div>
             </div>
           </div>
+
+          <!-- Explicit Confirmation Checkbox -->
+          <div class="form-group">
+            <label class="checkbox-label" for="pr-confirm-review">
+              <input id="pr-confirm-review" type="checkbox">
+              <span>I have reviewed the proposed README and LICENSE changes and confirm this pull request.</span>
+            </label>
+          </div>
+
           <div class="cluster">
             <button id="pr-trigger-btn" type="button" class="btn btn-primary">
               Create pull request
@@ -161,8 +209,37 @@
             <strong>PR Title:</strong> <span id="pr-title-preview">chore: add MIT LICENSE</span>
           </div>
           <p id="pr-copyright-preview" class="text-muted"></p>
-          <details class="disclosure"><summary>README addition preview</summary><pre id="pr-readme-preview" class="license-preview"></pre></details>
-          <details class="disclosure"><summary>Full PR description</summary><pre id="pr-body-preview" class="license-preview"></pre></details>
+
+          <div class="stack-xs">
+            <div class="text-small"><strong>Changed Files:</strong></div>
+            <div id="pr-files-list" class="cluster-sm"></div>
+          </div>
+
+          <nav class="preview-tabs" role="tablist" aria-label="Preview Views">
+            <button type="button" id="tab-rendered-btn" class="preview-tab-btn active" role="tab" aria-selected="true">Rendered Preview</button>
+            <button type="button" id="tab-diff-btn" class="preview-tab-btn" role="tab" aria-selected="false">Before/After Diff</button>
+            <button type="button" id="tab-proposed-btn" class="preview-tab-btn" role="tab" aria-selected="false">Proposed Markdown</button>
+            <button type="button" id="tab-original-btn" class="preview-tab-btn" role="tab" aria-selected="false">Original README</button>
+            <button type="button" id="tab-desc-btn" class="preview-tab-btn" role="tab" aria-selected="false">PR Description</button>
+          </nav>
+
+          <div id="panel-rendered" class="preview-panel">
+            <div id="pr-rendered-preview" class="rendered-markdown"></div>
+          </div>
+          <div id="panel-diff" class="preview-panel" hidden>
+            <pre id="pr-diff-preview" class="diff-view"></pre>
+          </div>
+          <div id="panel-proposed" class="preview-panel" hidden>
+            <pre id="pr-proposed-preview" class="diff-view"></pre>
+          </div>
+          <div id="panel-original" class="preview-panel" hidden>
+            <pre id="pr-original-preview" class="diff-view"></pre>
+          </div>
+          <div id="panel-desc" class="preview-panel" hidden>
+            <pre id="pr-body-preview" class="license-preview"></pre>
+          </div>
+
+          <details class="disclosure" style="display: none;"><summary>README addition preview</summary><pre id="pr-readme-preview" class="license-preview"></pre></details>
         </div>
       </section>
     </div>

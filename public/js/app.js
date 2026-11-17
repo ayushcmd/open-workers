@@ -15,7 +15,13 @@ import {
   resolveLicense
 } from './engine.js';
 import { generateLicensePackage } from './generator.js';
-import { licenseReadmeSnippets } from './readme.js';
+import {
+  licenseReadmeSnippets,
+  inspectReadme,
+  smartUpdateReadme,
+  generateUnifiedDiff,
+  renderSafeMarkdown
+} from './readme.js';
 import { analyzePublicRepository, parseRepoInput } from './analyzer.js';
 import { getAuthStatus, logoutUser } from './auth.js';
 
@@ -1071,10 +1077,43 @@ function initAppInstallPage() {
   const holderInput = document.getElementById('pr-holder');
   const yearInput = document.getElementById('pr-year');
   const actionSelect = document.getElementById('pr-action');
-  const readmeSelect = document.getElementById('pr-readme');
+  const readmeHidden = document.getElementById('pr-readme');
+  const badgeActionSelect = document.getElementById('pr-badge-action');
+  const sectionActionSelect = document.getElementById('pr-section-action');
+  const modeGuidedBtn = document.getElementById('pr-mode-guided');
+  const modeAdvancedBtn = document.getElementById('pr-mode-advanced');
+  const guidedPanel = document.getElementById('pr-guided-panel');
+  const advancedPanel = document.getElementById('pr-advanced-panel');
+  const readmeEditor = document.getElementById('pr-readme-advanced-text');
+  const resetOrigBtn = document.getElementById('pr-readme-reset-orig');
+  const restoreGuidedBtn = document.getElementById('pr-readme-restore-guided');
+  const inspectionBox = document.getElementById('pr-readme-inspection');
+  const conflictBox = document.getElementById('pr-readme-conflict');
+  const confirmReview = document.getElementById('pr-confirm-review');
+  const filesListEl = document.getElementById('pr-files-list');
+
+  // Preview Tabs & Panels
+  const tabRenderedBtn = document.getElementById('tab-rendered-btn');
+  const tabDiffBtn = document.getElementById('tab-diff-btn');
+  const tabProposedBtn = document.getElementById('tab-proposed-btn');
+  const tabOriginalBtn = document.getElementById('tab-original-btn');
+  const tabDescBtn = document.getElementById('tab-desc-btn');
+
+  const panelRendered = document.getElementById('panel-rendered');
+  const panelDiff = document.getElementById('panel-diff');
+  const panelProposed = document.getElementById('panel-proposed');
+  const panelOriginal = document.getElementById('panel-original');
+  const panelDesc = document.getElementById('panel-desc');
+
+  const renderedPreview = document.getElementById('pr-rendered-preview');
+  const diffPreview = document.getElementById('pr-diff-preview');
+  const proposedPreview = document.getElementById('pr-proposed-preview');
+  const originalPreview = document.getElementById('pr-original-preview');
   const previewBranch = document.getElementById('pr-branch-preview');
   const previewTitle = document.getElementById('pr-title-preview');
   const previewBody = document.getElementById('pr-body-preview');
+  const copyrightPreview = document.getElementById('pr-copyright-preview');
+
   const serverStatusEl = document.getElementById('server-status-banner');
   const installAppLink = document.getElementById('install-app-link');
   const triggerBtn = document.getElementById('pr-trigger-btn');
@@ -1094,25 +1133,194 @@ function initAppInstallPage() {
   if (repoInput && initialRepo) repoInput.value = initialRepo;
   if (yearInput && !yearInput.value) yearInput.value = String(new Date().getFullYear());
 
-  function updatePrPreview() {
-    const readmePlacement = readmeSelect?.value || 'none';
-    const selectedLicense = getLicenseById(licenseSelect.value);
-    const readmePreview = document.getElementById('pr-readme-preview');
-    if (readmePreview && selectedLicense) {
-      const snippets = licenseReadmeSnippets(selectedLicense);
-      readmePreview.textContent = readmePlacement === 'none' ? 'README will not be changed.'
-        : readmePlacement === 'both' ? `${snippets.top}\n\n… existing README …\n\n${snippets.bottom}` : snippets[readmePlacement];
+  // Editor State
+  let activeEditorMode = 'guided'; // 'guided' | 'advanced'
+  let originalReadmeContent = '';
+  let originalReadmeSha = null;
+  let originalLicenseSha = null;
+  let proposedReadmeContent = '';
+  let guidedProposalContent = '';
+  let previewDebounceTimer = null;
+  let previewSequence = 0;
+  let verifiedPreview = null;
+  let inspectionError = null;
+
+  function renderInspectionFailure(errorMsg) {
+    if (renderedPreview) {
+      clearNode(renderedPreview);
+      renderedPreview.appendChild(
+        el('p', { className: 'text-muted' }, [
+          el('em', {}, `Actual repository preview unavailable: inspection failed (${errorMsg}).`)
+        ])
+      );
     }
-    const copyrightPreview = document.getElementById('pr-copyright-preview');
-    if (copyrightPreview) copyrightPreview.textContent = licenseSelect.value === 'Unlicense'
-      ? 'Public-domain dedication · no copyright notice'
-      : `Copyright (c) ${yearInput?.value || new Date().getFullYear()} ${holderInput?.value.trim() || 'Enter your name or organization'}`;
+    if (proposedPreview) {
+      proposedPreview.textContent = `(Inspection failed: ${errorMsg})\nActual repository README could not be inspected. PR creation is disabled until inspection succeeds.`;
+    }
+    if (originalPreview) {
+      originalPreview.textContent = `(Inspection failed: ${errorMsg})`;
+    }
+    renderDiffView([]);
+    updateFilesList([]);
+  }
+
+  function switchTab(activeTab) {
+    const tabs = [
+      { name: 'rendered', btn: tabRenderedBtn, panel: panelRendered },
+      { name: 'diff', btn: tabDiffBtn, panel: panelDiff },
+      { name: 'proposed', btn: tabProposedBtn, panel: panelProposed },
+      { name: 'original', btn: tabOriginalBtn, panel: panelOriginal },
+      { name: 'desc', btn: tabDescBtn, panel: panelDesc }
+    ];
+
+    for (const t of tabs) {
+      if (!t.btn || !t.panel) continue;
+      const isMatch = t.name === activeTab;
+      t.btn.classList.toggle('active', isMatch);
+      t.btn.setAttribute('aria-selected', String(isMatch));
+      t.panel.hidden = !isMatch;
+    }
+  }
+
+  tabRenderedBtn?.addEventListener('click', () => switchTab('rendered'));
+  tabDiffBtn?.addEventListener('click', () => switchTab('diff'));
+  tabProposedBtn?.addEventListener('click', () => switchTab('proposed'));
+  tabOriginalBtn?.addEventListener('click', () => switchTab('original'));
+  tabDescBtn?.addEventListener('click', () => switchTab('desc'));
+
+  function switchMode(mode) {
+    activeEditorMode = mode;
+    if (confirmReview) confirmReview.checked = false;
+
+    if (mode === 'guided') {
+      modeGuidedBtn?.classList.add('active');
+      modeGuidedBtn?.setAttribute('aria-selected', 'true');
+      modeAdvancedBtn?.classList.remove('active');
+      modeAdvancedBtn?.setAttribute('aria-selected', 'false');
+      if (guidedPanel) guidedPanel.hidden = false;
+      if (advancedPanel) advancedPanel.hidden = true;
+      schedulePreview();
+    } else {
+      modeAdvancedBtn?.classList.add('active');
+      modeAdvancedBtn?.setAttribute('aria-selected', 'true');
+      modeGuidedBtn?.classList.remove('active');
+      modeGuidedBtn?.setAttribute('aria-selected', 'false');
+      if (guidedPanel) guidedPanel.hidden = true;
+      if (advancedPanel) advancedPanel.hidden = false;
+
+      if (readmeEditor) {
+        readmeEditor.value = proposedReadmeContent || originalReadmeContent;
+      }
+      renderLocalPreview();
+    }
+  }
+
+  modeGuidedBtn?.addEventListener('click', () => switchMode('guided'));
+  modeAdvancedBtn?.addEventListener('click', () => switchMode('advanced'));
+
+  resetOrigBtn?.addEventListener('click', () => {
+    if (readmeEditor) readmeEditor.value = originalReadmeContent;
+    if (confirmReview) confirmReview.checked = false;
+    renderLocalPreview();
+  });
+
+  restoreGuidedBtn?.addEventListener('click', () => {
+    if (readmeEditor) readmeEditor.value = guidedProposalContent;
+    if (confirmReview) confirmReview.checked = false;
+    renderLocalPreview();
+  });
+
+  readmeEditor?.addEventListener('input', () => {
+    if (confirmReview) confirmReview.checked = false;
+    renderLocalPreview();
+  });
+
+  function renderDiffView(diffText) {
+    if (!diffPreview) return;
+    clearNode(diffPreview);
+    const lines = (diffText || '').split('\n');
+    const frag = document.createDocumentFragment();
+
+    for (const line of lines) {
+      const span = document.createElement('span');
+      span.textContent = line + '\n';
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        span.className = 'diff-added';
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        span.className = 'diff-removed';
+      } else if (line.startsWith('@@') || line.startsWith('---') || line.startsWith('+++')) {
+        span.className = 'diff-header';
+      }
+      frag.appendChild(span);
+    }
+    diffPreview.appendChild(frag);
+  }
+
+  function updateFilesList(files = []) {
+    if (!filesListEl) return;
+    clearNode(filesListEl);
+    for (const file of files) {
+      const badge = el('span', { class: 'file-change-badge' }, `${file.path} (${file.action})`);
+      filesListEl.appendChild(badge);
+    }
+  }
+
+  function renderLocalPreview() {
+    const selectedLicense = getLicenseById(licenseSelect.value);
     const action = actionSelect?.value === 'replace' ? 'replace' : 'add';
     const licenseId = licenseSelect.value;
-    const explanation = explainLicense(licenseId);
     const branchSlug = licenseId.toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '');
+
     if (previewBranch) previewBranch.textContent = `chore/${action}-license-${branchSlug}`;
     if (previewTitle) previewTitle.textContent = `chore: ${action} ${licenseId} LICENSE`;
+
+    if (copyrightPreview) {
+      copyrightPreview.textContent = licenseSelect.value === 'Unlicense'
+        ? 'Public-domain dedication · no copyright notice'
+        : `Copyright (c) ${yearInput?.value || new Date().getFullYear()} ${holderInput?.value.trim() || 'Enter your name or organization'}`;
+    }
+
+    if (activeEditorMode === 'advanced') {
+      proposedReadmeContent = readmeEditor?.value || '';
+    } else {
+      proposedReadmeContent = smartUpdateReadme(originalReadmeContent, {
+        license: { id: licenseId, name: selectedLicense?.name || licenseId },
+        licenseLink: 'LICENSE',
+        badgeAction: badgeActionSelect?.value || 'update_badge',
+        sectionAction: sectionActionSelect?.value || 'update_section'
+      });
+      guidedProposalContent = proposedReadmeContent;
+    }
+
+    // Rendered HTML
+    if (renderedPreview) {
+      renderedPreview.innerHTML = renderSafeMarkdown(proposedReadmeContent);
+    }
+
+    // Proposed Markdown source
+    if (proposedPreview) {
+      proposedPreview.textContent = proposedReadmeContent;
+    }
+
+    // Original README source
+    if (originalPreview) {
+      originalPreview.textContent = originalReadmeContent || '(No README file exists in repository)';
+    }
+
+    // Before/After Diff
+    const diff = generateUnifiedDiff(originalReadmeContent, proposedReadmeContent, 'README.md');
+    renderDiffView(diff);
+
+    // Sync files badge list
+    const changed = proposedReadmeContent !== originalReadmeContent;
+    const files = [{ path: 'LICENSE', action: action === 'replace' ? 'replace' : 'add' }];
+    if (changed) {
+      files.push({ path: 'README.md', action: originalReadmeSha ? 'update' : 'create' });
+    }
+    updateFilesList(files);
+
+    // Update explanation PR description
+    const explanation = explainLicense(licenseId);
     if (previewBody && explanation) {
       const canLines = explanation.canDo.map((i) => `- ${i.label}: ${i.description}`).join('\n');
       const mustLines = explanation.mustDo.length
@@ -1122,9 +1330,9 @@ function initAppInstallPage() {
       previewBody.textContent = [
         `## Summary`,
         action === 'replace'
-          ? `This automated pull request replaces the existing license with **${explanation.name} (\`${explanation.id}\`)**. Review the license diff before merging.`
+          ? `This automated pull request replaces the existing license with **${explanation.name} (\`${explanation.id}\`)**.`
           : `This automated pull request adds a \`LICENSE\` file under **${explanation.name} (\`${explanation.id}\`)**.`,
-        readmePlacement === 'none' ? 'README will not be changed.' : `Also adds a license mention to the repository README (${readmePlacement}). Existing license wording is preserved for review.`,
+        changed ? `README: Updates repository README.` : 'README will not be changed.',
         ``,
         explanation.plainSummary,
         ``,
@@ -1149,12 +1357,172 @@ function initAppInstallPage() {
     }
   }
 
-  licenseSelect.addEventListener('change', updatePrPreview);
-  actionSelect?.addEventListener('change', updatePrPreview);
-  readmeSelect?.addEventListener('change', updatePrPreview);
-  holderInput?.addEventListener('input', updatePrPreview);
-  yearInput?.addEventListener('input', updatePrPreview);
-  updatePrPreview();
+  async function fetchBackendPreview() {
+    const repoVal = repoInput?.value?.trim();
+    if (!repoVal || !repoVal.includes('/')) {
+      verifiedPreview = null;
+      if (confirmReview) confirmReview.disabled = true;
+      return;
+    }
+
+    const currentSeq = ++previewSequence;
+    if (inspectionBox) {
+      inspectionBox.className = 'flash flash-info text-small';
+      inspectionBox.textContent = `Inspecting ${repoVal} on GitHub...`;
+      inspectionBox.hidden = false;
+    }
+
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      const manualToken = tokenInput ? tokenInput.value.trim() : '';
+      if (manualToken) {
+        headers.Authorization = `Bearer ${manualToken}`;
+      }
+
+      const res = await fetch('/api/preview-pr', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify({
+          repo: repoVal,
+          licenseId: licenseSelect.value,
+          year: yearInput?.value?.trim() || '',
+          holder: holderInput?.value?.trim() || '',
+          replaceExisting: actionSelect?.value === 'replace',
+          readmePlacement: readmeHidden?.value || 'both',
+          badgeAction: badgeActionSelect?.value || 'update_badge',
+          sectionAction: sectionActionSelect?.value || 'update_section',
+          customReadmeContent: activeEditorMode === 'advanced' ? readmeEditor?.value : undefined
+        })
+      });
+
+      // Prevent stale asynchronous preview responses from overwriting newer selections
+      if (currentSeq !== previewSequence) return;
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        verifiedPreview = null;
+        inspectionError = data.error || `Inspection failed (${res.status})`;
+
+        if (inspectionBox) {
+          inspectionBox.className = 'flash flash-error text-small';
+          inspectionBox.textContent = `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`;
+          inspectionBox.hidden = false;
+        }
+        if (conflictBox) conflictBox.hidden = true;
+        if (confirmReview) {
+          confirmReview.checked = false;
+          confirmReview.disabled = true;
+        }
+
+        renderInspectionFailure(inspectionError);
+        return;
+      }
+
+      verifiedPreview = data;
+      inspectionError = null;
+
+      if (data.readme) {
+        originalReadmeContent = data.readme.originalContent || '';
+        originalReadmeSha = data.readme.sha ?? null;
+        if (activeEditorMode === 'guided') {
+          proposedReadmeContent = data.readme.proposedContent || '';
+          guidedProposalContent = proposedReadmeContent;
+          if (readmeEditor) readmeEditor.value = proposedReadmeContent;
+        }
+
+        // Inspection banner
+        if (inspectionBox) {
+          inspectionBox.className = 'flash flash-success text-small';
+          if (data.readme.exists) {
+            inspectionBox.textContent = `Verified preview: README detected at ${data.readme.path} (SHA: ${data.readme.sha?.slice(0, 7) || 'blob'} on branch ${data.defaultBranch || 'main'}).`;
+          } else {
+            inspectionBox.textContent = `Verified preview: No README found on branch ${data.defaultBranch || 'main'}. A new README.md will be created.`;
+          }
+          inspectionBox.hidden = false;
+        }
+
+        // Conflict banner
+        if (conflictBox) {
+          if (data.conflicts && data.conflicts.length > 0) {
+            conflictBox.textContent = data.conflicts.map((c) => c.detail).join(' ');
+            conflictBox.hidden = false;
+          } else {
+            conflictBox.hidden = true;
+          }
+        }
+      }
+
+      if (data.license) {
+        originalLicenseSha = data.license.sha ?? null;
+      }
+
+      if (data.files) {
+        updateFilesList(data.files);
+      }
+
+      if (confirmReview) confirmReview.disabled = false;
+      renderLocalPreview();
+    } catch (err) {
+      if (currentSeq !== previewSequence) return;
+      verifiedPreview = null;
+      inspectionError = err.message || 'Network error while contacting server';
+
+      if (inspectionBox) {
+        inspectionBox.className = 'flash flash-error text-small';
+        inspectionBox.textContent = `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`;
+        inspectionBox.hidden = false;
+      }
+      if (confirmReview) {
+        confirmReview.checked = false;
+        confirmReview.disabled = true;
+      }
+      renderInspectionFailure(inspectionError);
+    }
+  }
+
+  function schedulePreview() {
+    // Clear confirmation whenever inspected content, repository, license, or proposed changes change
+    if (confirmReview) {
+      confirmReview.checked = false;
+      confirmReview.disabled = true;
+    }
+    verifiedPreview = null;
+    inspectionError = null;
+
+    const repoVal = repoInput?.value?.trim();
+    if (!repoVal || !repoVal.includes('/')) {
+      if (inspectionBox) {
+        inspectionBox.className = 'flash flash-info text-small';
+        inspectionBox.textContent = 'Illustrative preview · Enter a repository (owner/name) to inspect actual README and files.';
+        inspectionBox.hidden = false;
+      }
+      if (conflictBox) conflictBox.hidden = true;
+      renderLocalPreview();
+      return;
+    }
+
+    renderLocalPreview();
+    if (window.location.protocol.startsWith('http')) {
+      clearTimeout(previewDebounceTimer);
+      previewDebounceTimer = setTimeout(fetchBackendPreview, 350);
+    }
+  }
+
+  licenseSelect.addEventListener('change', schedulePreview);
+  actionSelect?.addEventListener('change', schedulePreview);
+  badgeActionSelect?.addEventListener('change', schedulePreview);
+  sectionActionSelect?.addEventListener('change', schedulePreview);
+  holderInput?.addEventListener('input', schedulePreview);
+  yearInput?.addEventListener('input', schedulePreview);
+  repoInput?.addEventListener('input', schedulePreview);
+  repoInput?.addEventListener('blur', schedulePreview);
+  readmeEditor?.addEventListener('input', schedulePreview);
+
+  // Initial local preview
+  renderLocalPreview();
+  if (repoInput?.value?.trim()) schedulePreview();
 
   // Manage GitHub user authorization state
   const authLoading = document.getElementById('pr-auth-loading');
@@ -1201,7 +1569,6 @@ function initAppInstallPage() {
           };
         }
       } else {
-        // Fallback for environments where OAuth is not configured
         if (tokenFallback) tokenFallback.hidden = false;
       }
     } catch {
@@ -1219,7 +1586,6 @@ function initAppInstallPage() {
     refreshAuth();
   }
 
-  // Check backend availability quietly; surface errors only on actual failure or user action
   let backendReady = false;
   let appConfigured = false;
   let statusProbe = Promise.resolve();
@@ -1281,6 +1647,25 @@ function initAppInstallPage() {
         return;
       }
 
+      // Enforce verified repository preview
+      if (!verifiedPreview) {
+        triggerStatus.className = 'flash flash-error';
+        triggerStatus.textContent = inspectionError
+          ? `Repository inspection failed: ${inspectionError}. PR creation is disabled until inspection succeeds.`
+          : 'Repository inspection is required before creating a pull request. Enter a repository and wait for verified preview.';
+        triggerStatus.hidden = false;
+        return;
+      }
+
+      // Check explicit confirmation
+      if (confirmReview && !confirmReview.checked) {
+        triggerStatus.className = 'flash flash-error';
+        triggerStatus.textContent = 'Please review and confirm the proposed README and LICENSE changes before creating the pull request.';
+        triggerStatus.hidden = false;
+        confirmReview.focus();
+        return;
+      }
+
       const manualToken = tokenInput ? tokenInput.value.trim() : '';
       if (tokenInput) tokenInput.value = '';
 
@@ -1316,7 +1701,15 @@ function initAppInstallPage() {
             year: yearInput?.value || '',
             holder: holderInput?.value || '',
             replaceExisting: actionSelect?.value === 'replace',
-            readmePlacement: readmeSelect?.value || 'none'
+            readmePlacement: readmeHidden?.value || 'both',
+            badgeAction: badgeActionSelect?.value || 'update_badge',
+            sectionAction: sectionActionSelect?.value || 'update_section',
+            customReadmeContent: activeEditorMode === 'advanced' ? readmeEditor?.value : undefined,
+            expectedReadmeSha: verifiedPreview.readme?.sha ?? null,
+            expectedReadmeContent: proposedReadmeContent,
+            expectedLicenseSha: verifiedPreview.license?.sha ?? null,
+            previewToken: verifiedPreview.previewToken,
+            confirmed: true
           })
         });
         const payload = await res.json().catch(() => ({}));
