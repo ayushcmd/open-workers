@@ -62,6 +62,8 @@ import {
 } from '../modules/automation/automationService.js';
 import { analyzeRepositoryDashboard } from '../core/dashboard/coordinator.js';
 import { authorizeRepositoryWrite } from '../core/github/authorize.js';
+import { createAuthRouter } from './auth.js';
+import { parseCookies, decryptSession } from '../core/auth/session.js';
 import { LICENSE_CATALOG, SPDX_DATA_VERSION, getLicenseById } from '../../public/js/catalog-data.js';
 import {
   ServiceError,
@@ -95,9 +97,19 @@ function withServiceErrorHandling(handler) {
  * @param {object} [deps.env]
  * @returns {Router}
  */
-export function createApiRouter({ githubContext, env = process.env, createUserClient }) {
+export function createApiRouter({ githubContext, env = process.env, createUserClient, fetchFn }) {
   const router = Router();
   const appUrl = (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+
+  function getSessionToken(req) {
+    const cookies = parseCookies(req.headers.cookie);
+    const sessionTokenStr = cookies.ow_session;
+    if (!sessionTokenStr || !githubContext?.sessionSecret) return null;
+    const session = decryptSession(sessionTokenStr, githubContext.sessionSecret);
+    return session?.token || null;
+  }
+
+  router.use('/auth', createAuthRouter({ githubContext, env, fetchFn }));
 
   router.get('/capabilities', (_req, res) => res.json({ capabilities: CAPABILITIES }));
   router.get('/capabilities/:id', (req, res) => {
@@ -138,6 +150,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
     withServiceErrorHandling(async (req, res) => {
       await authorizeRepositoryWrite({
         authorization: req.get('authorization'),
+        sessionToken: getSessionToken(req),
         repoInput: req.body?.repo,
         githubContext,
         createUserClient
@@ -200,6 +213,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
     withServiceErrorHandling(async (req, res) => {
       await authorizeRepositoryWrite({
         authorization: req.get('authorization'),
+        sessionToken: getSessionToken(req),
         repoInput: req.body?.repo,
         githubContext,
         createUserClient
@@ -296,6 +310,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
     withServiceErrorHandling(async (req, res) => {
       await authorizeRepositoryWrite({
         authorization: req.get('authorization'),
+        sessionToken: getSessionToken(req),
         repoInput: req.body?.repo,
         githubContext,
         createUserClient
@@ -519,6 +534,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
     withServiceErrorHandling(async (req, res) => {
       const auth = await authorizeRepositoryWrite({
         authorization: req.get('authorization'),
+        sessionToken: getSessionToken(req),
         repoInput: req.body?.repo,
         githubContext,
         createUserClient
@@ -589,6 +605,8 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
         : 'https://github.com/apps/open-workers/installations/new',
       githubAppConfigured: Boolean(githubContext?.isAppConfigured),
       webhookConfigured: Boolean(githubContext?.isWebhookConfigured),
+      isOAuthConfigured: Boolean(githubContext?.isOAuthConfigured),
+      clientId: githubContext?.clientId || null,
       planTier: 'free',
       supportedPermissions: {
         metadata: 'read',
@@ -626,7 +644,13 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
   router.post(
     '/trigger-pr',
     withServiceErrorHandling(async (req, res) => {
-      await authorizeRepositoryWrite({ authorization: req.get('authorization'), repoInput: req.body?.repo, githubContext, createUserClient });
+      await authorizeRepositoryWrite({
+        authorization: req.get('authorization'),
+        sessionToken: getSessionToken(req),
+        repoInput: req.body?.repo,
+        githubContext,
+        createUserClient
+      });
       const result = await createLicensePullRequest({
         repo: req.body?.repo,
         licenseId: req.body?.licenseId,
