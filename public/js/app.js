@@ -1389,6 +1389,7 @@ function initAppInstallPage() {
           year: yearInput?.value?.trim() || '',
           holder: holderInput?.value?.trim() || '',
           replaceExisting: actionSelect?.value === 'replace',
+          readmePlacement: readmeHidden?.value || 'both',
           badgeAction: badgeActionSelect?.value || 'update_badge',
           sectionAction: sectionActionSelect?.value || 'update_section',
           customReadmeContent: activeEditorMode === 'advanced' ? readmeEditor?.value : undefined

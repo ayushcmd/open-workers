@@ -18,7 +18,16 @@ import {
 } from '../src/services/prService.js';
 import { createApp } from '../src/server.js';
 import { encryptSession } from '../src/core/auth/session.js';
-import { createPreviewToken, verifyPreviewToken } from '../src/core/licensing/previewToken.js';
+import {
+  createPreviewToken,
+  verifyPreviewToken,
+  computeContentHash,
+  PreviewTokenConfigError,
+  validateSigningSecret
+} from '../src/core/licensing/previewToken.js';
+
+const TEST_PREVIEW_SECRET = 'test-preview-signing-secret-key-32chars';
+process.env.SESSION_SECRET = TEST_PREVIEW_SECRET;
 
 const apache = LICENSE_CATALOG.find((l) => l.id === 'Apache-2.0');
 const mit = LICENSE_CATALOG.find((l) => l.id === 'MIT');
@@ -1262,16 +1271,19 @@ describe('Smart README Editor & Conflict Handling (Issue #30)', () => {
     const expiredToken = createPreviewToken({
       repo: 'mock/repo',
       licenseId: 'MIT',
+      year: '2026',
+      holder: 'Test Org',
       replaceExisting: false,
       readmePlacement: 'none',
       badgeAction: 'update_badge',
       sectionAction: 'update_section',
+      licenseContentHash: computeContentHash('dummy license content'),
       readmeSha: 'readme-sha-1',
       readmeExists: true,
       licenseSha: null,
       licenseExists: false,
       proposedReadmeHash: 'dummy'
-    }, undefined, -1000); // negative TTL -> expired
+    }, TEST_PREVIEW_SECRET, -1000); // negative TTL -> expired
 
     await assert.rejects(
       createLicensePullRequest({
@@ -1414,5 +1426,294 @@ describe('Smart README Editor & Conflict Handling (Issue #30)', () => {
         return true;
       }
     );
+  });
+
+  // Case 38: Reject copyright holder change after preview
+  it('38. rejects requests where copyright holder was changed after preview', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from('# App').toString('base64') }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    const preview = await previewLicensePullRequest({
+      repo: 'mock/repo',
+      licenseId: 'MIT',
+      holder: 'Original Author',
+      year: '2026',
+      badgeAction: 'update_badge',
+      sectionAction: 'update_section',
+      githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+    });
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Modified Author', // changed from Original Author
+        year: '2026',
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        confirmed: true,
+        previewToken: preview.previewToken,
+        expectedReadmeSha: preview.readme.sha,
+        expectedLicenseSha: null,
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 409 && err.code === 'PREVIEW_MISMATCH' && err.details?.reason === 'HOLDER_MISMATCH'
+    );
+  });
+
+  // Case 39: Reject copyright year change after preview
+  it('39. rejects requests where copyright year was changed after preview', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from('# App').toString('base64') }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    const preview = await previewLicensePullRequest({
+      repo: 'mock/repo',
+      licenseId: 'MIT',
+      holder: 'Test Org',
+      year: '2026',
+      badgeAction: 'update_badge',
+      sectionAction: 'update_section',
+      githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+    });
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        year: '2025', // changed from 2026
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        confirmed: true,
+        previewToken: preview.previewToken,
+        expectedReadmeSha: preview.readme.sha,
+        expectedLicenseSha: null,
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 409 && err.code === 'PREVIEW_MISMATCH' && err.details?.reason === 'YEAR_MISMATCH'
+    );
+  });
+
+  // Case 40: Reject README placement change after preview
+  it('40. rejects requests where README placement was changed after preview', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from('# App').toString('base64') }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    const preview = await previewLicensePullRequest({
+      repo: 'mock/repo',
+      licenseId: 'MIT',
+      holder: 'Test Org',
+      readmePlacement: 'both',
+      badgeAction: 'update_badge',
+      sectionAction: 'update_section',
+      githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+    });
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        readmePlacement: 'top', // changed from both to top
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        confirmed: true,
+        previewToken: preview.previewToken,
+        expectedReadmeSha: preview.readme.sha,
+        expectedLicenseSha: null,
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 409 && err.code === 'PREVIEW_MISMATCH' && err.details?.reason === 'README_PLACEMENT_MISMATCH'
+    );
+  });
+
+  // Case 41: Reject generated LICENSE content hash mismatch
+  it('41. rejects requests where generated LICENSE content hash was tampered with or mismatched', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from('# App').toString('base64') }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    // Construct token with a forged/tampered licenseContentHash
+    const tamperedToken = createPreviewToken({
+      repo: 'mock/repo',
+      licenseId: 'MIT',
+      year: '2026',
+      holder: 'Test Org',
+      replaceExisting: false,
+      readmePlacement: 'both',
+      badgeAction: 'update_badge',
+      sectionAction: 'update_section',
+      licenseContentHash: '0000000000000000000000000000000000000000000000000000000000000000', // tampered
+      readmeSha: 'readme-sha-1',
+      readmeExists: true,
+      licenseSha: null,
+      licenseExists: false,
+      proposedReadmeHash: computeContentHash('# App\n')
+    }, TEST_PREVIEW_SECRET);
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        year: '2026',
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        confirmed: true,
+        previewToken: tamperedToken,
+        expectedReadmeSha: 'readme-sha-1',
+        expectedLicenseSha: null,
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 409 && err.code === 'PREVIEW_MISMATCH' && err.details?.reason === 'LICENSE_CONTENT_MISMATCH'
+    );
+  });
+
+  // Case 42: Reject preview token creation and verification without strong explicit secret
+  it('42. rejects preview token creation and verification without strong explicit secret and refuses predictable defaults', () => {
+    const samplePayload = { repo: 'owner/repo', licenseId: 'MIT' };
+
+    // Missing secret
+    assert.throws(
+      () => createPreviewToken(samplePayload, undefined),
+      (err) => err instanceof PreviewTokenConfigError && err.code === 'CONFIG_ERROR'
+    );
+    assert.throws(
+      () => createPreviewToken(samplePayload, ''),
+      (err) => err instanceof PreviewTokenConfigError && err.code === 'CONFIG_ERROR'
+    );
+    assert.throws(
+      () => verifyPreviewToken('dummy.token', undefined),
+      (err) => err instanceof PreviewTokenConfigError && err.code === 'CONFIG_ERROR'
+    );
+
+    // Insecure / short secret (< 16 chars)
+    assert.throws(
+      () => createPreviewToken(samplePayload, 'short-secret'),
+      (err) => err instanceof PreviewTokenConfigError && err.message.includes('at least 16 characters')
+    );
+    assert.throws(
+      () => verifyPreviewToken('dummy.token', 'short-secret'),
+      (err) => err instanceof PreviewTokenConfigError && err.message.includes('at least 16 characters')
+    );
+
+    // Predictable fallback secret (open-workers-preview-token-secret)
+    assert.throws(
+      () => createPreviewToken(samplePayload, 'open-workers-preview-token-secret'),
+      (err) => err instanceof PreviewTokenConfigError && err.message.includes('predictable default')
+    );
+    assert.throws(
+      () => verifyPreviewToken('dummy.token', 'open-workers-preview-token-secret'),
+      (err) => err instanceof PreviewTokenConfigError && err.message.includes('predictable default')
+    );
+  });
+
+  // Case 43: Fail closed with 500 CONFIGURATION_ERROR when server secret is not configured
+  it('43. fails closed with HTTP 500 CONFIGURATION_ERROR when server signing secret is unavailable', async () => {
+    const prevSecret = process.env.SESSION_SECRET;
+    delete process.env.SESSION_SECRET;
+    delete process.env.PREVIEW_TOKEN_SECRET;
+
+    try {
+      const mockOctokit = {
+        rest: {
+          repos: {
+            get: async () => ({ data: { default_branch: 'main', archived: false } }),
+            getContent: async () => ({ data: [] }),
+            getReadme: async () => ({
+              data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from('# App').toString('base64') }
+            })
+          },
+          licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+        }
+      };
+
+      await assert.rejects(
+        previewLicensePullRequest({
+          repo: 'mock/repo',
+          licenseId: 'MIT',
+          holder: 'Test Org',
+          badgeAction: 'update_badge',
+          sectionAction: 'update_section',
+          githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+        }),
+        (err) => err.statusCode === 500 && err.code === 'CONFIGURATION_ERROR'
+      );
+
+      await assert.rejects(
+        createLicensePullRequest({
+          repo: 'mock/repo',
+          licenseId: 'MIT',
+          holder: 'Test Org',
+          badgeAction: 'update_badge',
+          sectionAction: 'update_section',
+          confirmed: true,
+          previewToken: 'some.valid.token',
+          expectedReadmeSha: 'readme-sha-1',
+          expectedLicenseSha: null,
+          githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+        }),
+        (err) => err.statusCode === 500 && err.code === 'CONFIGURATION_ERROR'
+      );
+    } finally {
+      process.env.SESSION_SECRET = prevSecret;
+    }
+  });
+
+  // Case 44: Never print secrets in error messages or logs
+  it('44. never prints or exposes secrets in configuration error messages', () => {
+    const secretUnderTest = 'predictable-secret-to-check';
+    try {
+      validateSigningSecret('open-workers-preview-token-secret');
+      assert.fail('Should have thrown');
+    } catch (err) {
+      assert.strictEqual(err.message.includes('open-workers-preview-token-secret'), false);
+    }
+
+    try {
+      validateSigningSecret('short');
+      assert.fail('Should have thrown');
+    } catch (err) {
+      assert.strictEqual(err.message.includes('short'), false);
+    }
   });
 });

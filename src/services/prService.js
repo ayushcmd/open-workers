@@ -13,7 +13,13 @@ import { commitFiles } from '../core/pullRequests/files.js';
 import { inspectRootEntries } from '../../public/js/analyzer.js';
 import { ServiceError, validatePrRequest } from './licenseService.js';
 import { authorizeRepositoryRead } from '../core/github/authorize.js';
-import { createPreviewToken, verifyPreviewToken, computeContentHash } from '../core/licensing/previewToken.js';
+import {
+  createPreviewToken,
+  verifyPreviewToken,
+  computeContentHash,
+  PreviewTokenConfigError,
+  validateSigningSecret
+} from '../core/licensing/previewToken.js';
 import {
   README_PLACEMENTS,
   generateUnifiedDiff,
@@ -23,6 +29,40 @@ import {
 import { prepareReadmeUpdate, fetchRepositoryReadme } from './readmeService.js';
 
 export { formatLicenseBranchName, buildPullRequestBody };
+
+/**
+ * Resolve and validate the server-side signing secret for preview tokens.
+ * Fails closed with HTTP 500 CONFIGURATION_ERROR if unavailable or insecure.
+ * Secrets are never logged or exposed in error messages.
+ *
+ * @param {object} [githubContext]
+ * @returns {string}
+ */
+export function getPreviewSigningSecret(githubContext) {
+  const candidate =
+    githubContext?.previewTokenSecret ||
+    githubContext?.sessionSecret ||
+    process.env.PREVIEW_TOKEN_SECRET ||
+    process.env.SESSION_SECRET;
+
+  if (!candidate) {
+    throw new ServiceError(
+      500,
+      'Preview token signing secret is not configured on the server. Configure SESSION_SECRET or PREVIEW_TOKEN_SECRET.',
+      'CONFIGURATION_ERROR'
+    );
+  }
+
+  try {
+    validateSigningSecret(candidate);
+    return candidate;
+  } catch (err) {
+    if (err instanceof PreviewTokenConfigError) {
+      throw new ServiceError(500, err.message, 'CONFIGURATION_ERROR');
+    }
+    throw err;
+  }
+}
 
 /**
  * Format a deterministic feature branch name for adding a specific SPDX license.
@@ -337,17 +377,20 @@ export async function previewLicensePullRequest({
     previewToken: createPreviewToken({
       repo: fullName,
       licenseId: validated.licenseId,
+      year: validated.licensePackage?.metadata?.year ? String(validated.licensePackage.metadata.year) : String(year || ''),
+      holder: typeof holder === 'string' ? holder.trim() : (validated.licensePackage?.metadata?.holder || ''),
       replaceExisting,
       readmePlacement,
       badgeAction: badgeAction || null,
       sectionAction: sectionAction || null,
+      licenseContentHash: computeContentHash(licensePackage.content),
       readmeSha: readmeData.sha ?? null,
       readmeExists: readmeData.exists,
       licenseSha: existingLicenseSha ?? null,
       licenseExists: Boolean(existingLicensePath),
       proposedReadmeHash: computeContentHash(proposedReadme),
       customReadmeHash: typeof customReadmeContent === 'string' ? computeContentHash(customReadmeContent) : null
-    }, githubContext?.sessionSecret)
+    }, getPreviewSigningSecret(githubContext))
   };
 }
 
@@ -363,7 +406,7 @@ export async function createLicensePullRequest({
   year,
   holder,
   replaceExisting = false,
-  readmePlacement = 'none',
+  readmePlacement,
   badgeAction,
   sectionAction,
   customReadmeContent,
@@ -374,13 +417,6 @@ export async function createLicensePullRequest({
   confirmed,
   githubContext
 }) {
-  if (!README_PLACEMENTS.includes(readmePlacement)) {
-    throw new ServiceError(400, 'readmePlacement must be none, top, bottom, or both.', 'INVALID_INPUT');
-  }
-  if (typeof replaceExisting !== 'boolean') {
-    throw new ServiceError(400, 'replaceExisting must be a boolean.', 'INVALID_INPUT');
-  }
-
   const isReadmeWorkflow = Boolean(
     badgeAction ||
     sectionAction ||
@@ -389,6 +425,17 @@ export async function createLicensePullRequest({
     expectedReadmeContent !== undefined ||
     previewToken !== undefined
   );
+
+  const effectiveReadmePlacement = readmePlacement !== undefined
+    ? readmePlacement
+    : (isReadmeWorkflow ? 'both' : 'none');
+
+  if (!README_PLACEMENTS.includes(effectiveReadmePlacement)) {
+    throw new ServiceError(400, 'readmePlacement must be none, top, bottom, or both.', 'INVALID_INPUT');
+  }
+  if (typeof replaceExisting !== 'boolean') {
+    throw new ServiceError(400, 'replaceExisting must be a boolean.', 'INVALID_INPUT');
+  }
 
   if (confirmed === false || (isReadmeWorkflow && confirmed !== true)) {
     throw new ServiceError(
@@ -409,7 +456,8 @@ export async function createLicensePullRequest({
         'PREVIEW_REQUIRED'
       );
     }
-    const verification = verifyPreviewToken(previewToken, githubContext?.sessionSecret);
+    const previewSecret = getPreviewSigningSecret(githubContext);
+    const verification = verifyPreviewToken(previewToken, previewSecret);
     if (!verification.valid) {
       throw new ServiceError(
         400,
@@ -426,14 +474,29 @@ export async function createLicensePullRequest({
     if (tokenPayload.licenseId !== validated.licenseId) {
       throw new ServiceError(409, 'Preview token was issued for a different license.', 'PREVIEW_MISMATCH', { reason: 'LICENSE_MISMATCH' });
     }
+    const expectedYear = validated.licensePackage?.metadata?.year ? String(validated.licensePackage.metadata.year) : String(year || '');
+    if (tokenPayload.year !== expectedYear) {
+      throw new ServiceError(409, 'Preview token does not match the requested copyright year.', 'PREVIEW_MISMATCH', { reason: 'YEAR_MISMATCH' });
+    }
+    const expectedHolder = typeof holder === 'string' ? holder.trim() : (validated.licensePackage?.metadata?.holder || '');
+    if (tokenPayload.holder !== expectedHolder) {
+      throw new ServiceError(409, 'Preview token does not match the requested copyright holder.', 'PREVIEW_MISMATCH', { reason: 'HOLDER_MISMATCH' });
+    }
     if (tokenPayload.replaceExisting !== replaceExisting) {
       throw new ServiceError(409, 'Preview token does not match the requested license action.', 'PREVIEW_MISMATCH', { reason: 'ACTION_MISMATCH' });
+    }
+    if (tokenPayload.readmePlacement !== effectiveReadmePlacement) {
+      throw new ServiceError(409, 'Preview token does not match the selected README placement.', 'PREVIEW_MISMATCH', { reason: 'README_PLACEMENT_MISMATCH' });
     }
     if (tokenPayload.badgeAction !== (badgeAction || null)) {
       throw new ServiceError(409, 'Preview token does not match the selected badge action.', 'PREVIEW_MISMATCH', { reason: 'BADGE_ACTION_MISMATCH' });
     }
     if (tokenPayload.sectionAction !== (sectionAction || null)) {
       throw new ServiceError(409, 'Preview token does not match the selected section action.', 'PREVIEW_MISMATCH', { reason: 'SECTION_ACTION_MISMATCH' });
+    }
+    const currentLicenseContentHash = computeContentHash(licensePackage.content);
+    if (tokenPayload.licenseContentHash !== currentLicenseContentHash) {
+      throw new ServiceError(409, 'Preview token does not match the generated LICENSE content.', 'PREVIEW_MISMATCH', { reason: 'LICENSE_CONTENT_MISMATCH' });
     }
 
     // Require expected README and LICENSE state explicitly (do not allow omitted values to bypass checks)
@@ -607,7 +670,7 @@ export async function createLicensePullRequest({
     ref: baseSha,
     license: { id: validated.licenseId, name: licensePackage.name },
     licensePath: existingLicensePath || licensePackage.filename,
-    placement: readmePlacement,
+    placement: effectiveReadmePlacement,
     badgeAction,
     sectionAction,
     customReadmeContent,
