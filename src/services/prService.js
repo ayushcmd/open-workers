@@ -12,6 +12,7 @@ import { repositoryService } from '../core/repository/service.js';
 import { commitFiles } from '../core/pullRequests/files.js';
 import { inspectRootEntries } from '../../public/js/analyzer.js';
 import { ServiceError, validatePrRequest } from './licenseService.js';
+import { authorizeRepositoryRead } from '../core/github/authorize.js';
 import {
   README_PLACEMENTS,
   generateUnifiedDiff,
@@ -132,7 +133,10 @@ export async function previewLicensePullRequest({
   badgeAction,
   sectionAction,
   customReadmeContent,
-  githubContext
+  githubContext,
+  authorization,
+  sessionToken,
+  createUserClient
 }) {
   if (readmePlacement && !README_PLACEMENTS.includes(readmePlacement)) {
     throw new ServiceError(400, 'readmePlacement must be none, top, bottom, or both.', 'INVALID_INPUT');
@@ -173,6 +177,16 @@ export async function previewLicensePullRequest({
       throw new ServiceError(403, `Access denied reading metadata for "${fullName}".`, 'INSUFFICIENT_PERMISSIONS');
     }
     throw new ServiceError(502, `Failed to load repository details: ${err.message}`, 'GITHUB_API_ERROR');
+  }
+
+  if (repoData.private) {
+    await authorizeRepositoryRead({
+      authorization,
+      sessionToken,
+      repoInput: fullName,
+      githubContext,
+      createUserClient
+    });
   }
 
   const defaultBranch = repoData.default_branch || 'main';
@@ -338,6 +352,7 @@ export async function createLicensePullRequest({
   sectionAction,
   customReadmeContent,
   expectedReadmeSha,
+  expectedReadmeContent,
   expectedLicenseSha,
   confirmed,
   githubContext
@@ -347,6 +362,22 @@ export async function createLicensePullRequest({
   }
   if (typeof replaceExisting !== 'boolean') {
     throw new ServiceError(400, 'replaceExisting must be a boolean.', 'INVALID_INPUT');
+  }
+
+  const isReadmeWorkflow = Boolean(
+    badgeAction ||
+    sectionAction ||
+    customReadmeContent !== undefined ||
+    expectedReadmeSha !== undefined ||
+    expectedReadmeContent !== undefined
+  );
+
+  if (confirmed === false || (isReadmeWorkflow && confirmed !== true)) {
+    throw new ServiceError(
+      400,
+      'Explicit review and confirmation of proposed README and LICENSE changes is required before creating a pull request.',
+      'CONFIRMATION_REQUIRED'
+    );
   }
   const validated = validatePrRequest({ repo: repoInput, licenseId, year, holder });
   const { owner, repo, fullName, explanation, licensePackage } = validated;
@@ -495,6 +526,21 @@ export async function createLicensePullRequest({
     customReadmeContent,
     expectedSha: expectedReadmeSha
   });
+
+  if (expectedReadmeContent !== undefined && expectedReadmeContent !== null) {
+    const actualProposed = readmeUpdate?.content ?? '';
+    if (actualProposed !== expectedReadmeContent) {
+      throw new ServiceError(
+        409,
+        'Proposed README content does not match the reviewed and confirmed preview. Re-review before proceeding.',
+        'PREVIEW_CONTENT_MISMATCH',
+        {
+          expectedContent: expectedReadmeContent,
+          actualContent: actualProposed
+        }
+      );
+    }
+  }
 
   const targetBranch = await createFeatureBranch(octokit, {
     owner,

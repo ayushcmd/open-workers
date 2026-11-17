@@ -657,6 +657,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
       customReadmeContent: req.body?.customReadmeContent,
       githubContext,
       authorization: req.get('authorization'),
+      sessionToken: getSessionToken(req),
       createUserClient
     });
     res.json(preview);
@@ -686,6 +687,7 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
         sectionAction: req.body?.sectionAction,
         customReadmeContent: req.body?.customReadmeContent,
         expectedReadmeSha: req.body?.expectedReadmeSha,
+        expectedReadmeContent: req.body?.expectedReadmeContent,
         expectedLicenseSha: req.body?.expectedLicenseSha,
         confirmed: req.body?.confirmed,
         githubContext

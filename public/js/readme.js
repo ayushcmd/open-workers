@@ -371,7 +371,7 @@ export function smartUpdateReadme(content, options = {}) {
     if (!README_PLACEMENTS.includes(options.placement)) {
       throw new Error('Invalid README placement.');
     }
-    if (options.placement === 'none') return content;
+    if (options.placement === 'none' && !badgeAction && !sectionAction) return content;
     if (!badgeAction) {
       badgeAction =
         options.placement === 'top' || options.placement === 'both' ? 'update_badge' : 'none';
@@ -410,6 +410,13 @@ export function smartUpdateReadme(content, options = {}) {
     );
 
   // 2. Handle Badge Action
+  if (badgeAction === 'insert_badge_group' || badgeAction === 'insert_top') {
+    const existingBadges = detectLicenseBadges(result);
+    if (existingBadges.length > 0) {
+      badgeAction = 'update_badge';
+    }
+  }
+
   if (badgeAction === 'update_badge') {
     const currentBadges = detectLicenseBadges(result);
     if (currentBadges.length > 0) {
@@ -423,7 +430,14 @@ export function smartUpdateReadme(content, options = {}) {
       const remainingBadges = detectLicenseBadges(result);
       for (let i = remainingBadges.length - 1; i >= 1; i--) {
         const b = remainingBadges[i];
-        result = result.slice(0, b.startIndex) + result.slice(b.endIndex);
+        let start = b.startIndex;
+        let end = b.endIndex;
+        if (start > 0 && result[start - 1] === ' ') {
+          start--;
+        } else if (end < result.length && result[end] === ' ') {
+          end++;
+        }
+        result = result.slice(0, start) + result.slice(end);
       }
     } else {
       // If no license badge exists, insert into badge group or below title
@@ -458,22 +472,48 @@ export function smartUpdateReadme(content, options = {}) {
   }
 
   // 3. Handle License Section Action
-  if (sectionAction === 'update_section') {
+  if (sectionAction === 'add_section') {
     const currentSections = detectLicenseSections(result);
+    if (currentSections.length > 0) {
+      sectionAction = 'update_section';
+    }
+  }
+
+  if (sectionAction === 'update_section') {
+    let currentSections = detectLicenseSections(result);
     // Find the primary license section to update
     // If a section is pure license (not custom attribution), update it
     const targetSection = currentSections.find((s) => !s.isAttribution) || currentSections[0];
 
     if (targetSection) {
-      // Preserve heading level and exact text: e.g. "## License"
-      const heading = targetSection.heading;
-      const updatedSection = `${heading}${newline}${newline}${
-        license.id === 'Unlicense' ? 'Released into the public domain under' : 'Licensed under'
-      } [${license.name}](${licenseLink}).${newline}`;
+      // Remove any subsequent pure duplicate license sections
+      const duplicates = currentSections.filter(
+        (s) => s !== targetSection && !s.isAttribution && s.startIndex > targetSection.startIndex
+      );
+      for (let i = duplicates.length - 1; i >= 0; i--) {
+        const dup = duplicates[i];
+        let dupStart = dup.startIndex;
+        let dupEnd = dup.endIndex;
+        if (dupStart > 0 && result[dupStart - 1] === '\n') {
+          dupStart--;
+          if (dupStart > 0 && result[dupStart - 1] === '\r') dupStart--;
+        }
+        result = result.slice(0, dupStart) + result.slice(dupEnd);
+      }
 
-      const before = result.slice(0, targetSection.startIndex);
-      const after = result.slice(targetSection.endIndex);
-      result = before + updatedSection + (after.startsWith(newline) ? after.slice(newline.length) : after);
+      currentSections = detectLicenseSections(result);
+      const primary = currentSections.find((s) => !s.isAttribution) || currentSections[0];
+      if (primary) {
+        // Preserve heading level and exact text: e.g. "## License"
+        const heading = primary.heading;
+        const updatedSection = `${heading}${newline}${newline}${
+          license.id === 'Unlicense' ? 'Released into the public domain under' : 'Licensed under'
+        } [${license.name}](${licenseLink}).${newline}`;
+
+        const before = result.slice(0, primary.startIndex);
+        const after = result.slice(primary.endIndex);
+        result = before + updatedSection + (after.startsWith(newline) ? after.slice(newline.length) : after);
+      }
     } else {
       sectionAction = 'add_section';
     }

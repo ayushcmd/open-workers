@@ -1596,6 +1596,7 @@ function initAppInstallPage() {
             sectionAction: sectionActionSelect?.value || 'update_section',
             customReadmeContent: activeEditorMode === 'advanced' ? readmeEditor?.value : undefined,
             expectedReadmeSha: originalReadmeSha,
+            expectedReadmeContent: proposedReadmeContent,
             expectedLicenseSha: originalLicenseSha,
             confirmed: true
           })

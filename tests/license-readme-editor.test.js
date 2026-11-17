@@ -547,4 +547,411 @@ describe('Smart README Editor & Conflict Handling (Issue #30)', () => {
       assert.notStrictEqual(b, 'main');
     }
   });
+
+  // Case 21: Private repository preview rejected when unauthenticated
+  it('21. rejects preview-pr on private repository with 401 when unauthenticated', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', private: true, archived: false } })
+        }
+      }
+    };
+
+    const { app } = createApp({
+      githubContext: {
+        isAppConfigured: true,
+        resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit })
+      }
+    });
+
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/preview-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: 'mock/private-repo',
+          licenseId: 'MIT',
+          holder: 'Test Org'
+        })
+      });
+
+      assert.strictEqual(res.status, 401);
+      const data = await res.json();
+      assert.strictEqual(data.code, 'AUTH_REQUIRED');
+      assert.ok(data.error.includes('Private repository'));
+    } finally {
+      server.close();
+    }
+  });
+
+  // Case 22: Private repository preview rejected when user lacks read permission
+  it('22. rejects preview-pr on private repository with 403 when user lacks read permission', async () => {
+    const secretKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const sessionToken = encryptSession({ login: 'outsider', token: 'user-token' }, secretKey);
+
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', private: true, archived: false } }),
+          getCollaboratorPermissionLevel: async () => ({ data: { permission: 'none' } })
+        }
+      }
+    };
+
+    const { app } = createApp({
+      env: { SESSION_SECRET: secretKey },
+      githubContext: {
+        sessionSecret: secretKey,
+        isAppConfigured: true,
+        resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit })
+      },
+      createUserClient: () => ({
+        rest: {
+          users: { getAuthenticated: async () => ({ data: { login: 'outsider', type: 'User' } }) },
+          repos: { get: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+        }
+      })
+    });
+
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/preview-pr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `ow_session=${sessionToken}`
+        },
+        body: JSON.stringify({
+          repo: 'mock/private-repo',
+          licenseId: 'MIT',
+          holder: 'Test Org'
+        })
+      });
+
+      assert.strictEqual(res.status, 403);
+      const data = await res.json();
+      assert.strictEqual(data.code, 'FORBIDDEN');
+    } finally {
+      server.close();
+    }
+  });
+
+  // Case 23: Private repository preview succeeds for authorized user
+  it('23. succeeds for authorized user previewing a private repository', async () => {
+    const secretKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    const sessionToken = encryptSession({ login: 'collaborator', token: 'user-token' }, secretKey);
+
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', private: true, archived: false } }),
+          getContent: async ({ path }) => {
+            if (path === '') return { data: [] };
+            const err = new Error('Not found'); err.status = 404; throw err;
+          },
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'sha-priv-readme', encoding: 'base64', content: Buffer.from('# Private Project').toString('base64') }
+          }),
+          getCollaboratorPermissionLevel: async () => ({ data: { permission: 'read' } })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    const { app } = createApp({
+      env: { SESSION_SECRET: secretKey },
+      githubContext: {
+        sessionSecret: secretKey,
+        isAppConfigured: true,
+        resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit })
+      },
+      createUserClient: () => ({
+        rest: {
+          users: { getAuthenticated: async () => ({ data: { login: 'collaborator', type: 'User' } }) }
+        }
+      })
+    });
+
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/licensing/preview-pr`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Cookie: `ow_session=${sessionToken}`
+        },
+        body: JSON.stringify({
+          repo: 'mock/private-repo',
+          licenseId: 'Apache-2.0',
+          holder: 'Test Org'
+        })
+      });
+
+      assert.strictEqual(res.status, 200);
+      const data = await res.json();
+      assert.strictEqual(data.readme.path, 'README.md');
+      assert.ok(data.readme.proposedContent.includes('Apache License 2.0'));
+    } finally {
+      server.close();
+    }
+  });
+
+  // Case 24: Public repository preview succeeds without user authentication
+  it('24. allows public repository inspection without requiring authentication', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', private: false, archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'sha-pub-readme', encoding: 'base64', content: Buffer.from('# Public Repo').toString('base64') }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    const { app } = createApp({
+      githubContext: {
+        isAppConfigured: true,
+        resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit })
+      }
+    });
+
+    const server = app.listen(0);
+    const port = server.address().port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/preview-pr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: 'mock/public-repo',
+          licenseId: 'MIT',
+          holder: 'Test Org'
+        })
+      });
+
+      assert.strictEqual(res.status, 200);
+      const data = await res.json();
+      assert.strictEqual(data.readme.path, 'README.md');
+    } finally {
+      server.close();
+    }
+  });
+
+  // Case 25: Omitted confirmation in README workflow rejected with 400
+  it('25. rejects PR creation with 400 CONFIRMATION_REQUIRED when confirmation is omitted in README workflow', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] })
+        }
+      }
+    };
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        // confirmed is omitted
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 400 && err.code === 'CONFIRMATION_REQUIRED'
+    );
+  });
+
+  // Case 26: False confirmation rejected with 400
+  it('26. rejects PR creation with 400 CONFIRMATION_REQUIRED when confirmed is false', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } })
+        }
+      }
+    };
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        confirmed: false,
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 400 && err.code === 'CONFIRMATION_REQUIRED'
+    );
+  });
+
+  // Case 27: Preview content mismatch guardrail
+  it('27. rejects PR creation with 409 PREVIEW_CONTENT_MISMATCH when expectedReadmeContent does not match proposed', async () => {
+    const readmeContent = '# My Tool\n\nExisting text.';
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from(readmeContent).toString('base64') }
+          })
+        },
+        git: {
+          getRef: async () => ({ data: { object: { sha: 'base-sha-1' } } })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    await assert.rejects(
+      createLicensePullRequest({
+        repo: 'mock/repo',
+        licenseId: 'MIT',
+        holder: 'Test Org',
+        badgeAction: 'update_badge',
+        sectionAction: 'update_section',
+        confirmed: true,
+        expectedReadmeSha: 'readme-sha-1',
+        expectedReadmeContent: '# Tampered Content That Does Not Match',
+        githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+      }),
+      (err) => err.statusCode === 409 && err.code === 'PREVIEW_CONTENT_MISMATCH'
+    );
+  });
+
+  // Case 28: Matching confirmation and content succeeds
+  it('28. succeeds when confirmed is true and expectedReadmeContent matches', async () => {
+    const readmeContent = '# My Tool\n\nExisting text.';
+    const committedFiles = [];
+    const mockOctokit = {
+      rest: {
+        repos: {
+          get: async () => ({ data: { default_branch: 'main', archived: false } }),
+          getContent: async () => ({ data: [] }),
+          getReadme: async () => ({
+            data: { type: 'file', path: 'README.md', sha: 'readme-sha-1', encoding: 'base64', content: Buffer.from(readmeContent).toString('base64') }
+          }),
+          createOrUpdateFileContents: async ({ path, content }) => {
+            committedFiles.push({ path, content: Buffer.from(content, 'base64').toString('utf8') });
+            return { data: { commit: { sha: 'commit-sha' } } };
+          }
+        },
+        git: {
+          getRef: async () => ({ data: { object: { sha: 'base-sha-1' } } }),
+          createRef: async ({ ref }) => ({ data: { ref } })
+        },
+        pulls: {
+          list: async () => ({ data: [] }),
+          create: async ({ head, base }) => ({
+            data: { number: 105, html_url: 'https://github.com/mock/repo/pull/105', head, base }
+          })
+        },
+        licenses: { getForRepo: async () => { const err = new Error('Not found'); err.status = 404; throw err; } }
+      }
+    };
+
+    // First generate the expected preview content
+    const directUpdate = await prepareReadmeUpdate(mockOctokit, {
+      owner: 'mock',
+      repo: 'repo',
+      ref: 'base-sha-1',
+      license: mit,
+      licensePath: 'LICENSE',
+      badgeAction: 'insert_top',
+      sectionAction: 'add_section'
+    });
+
+    const result = await createLicensePullRequest({
+      repo: 'mock/repo',
+      licenseId: 'MIT',
+      holder: 'Test Org',
+      badgeAction: 'insert_top',
+      sectionAction: 'add_section',
+      confirmed: true,
+      expectedReadmeSha: 'readme-sha-1',
+      expectedReadmeContent: directUpdate.content,
+      githubContext: { isAppConfigured: true, resolveRepoInstallation: async () => ({ installed: true, octokit: mockOctokit }) }
+    });
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.pullNumber, 105);
+    const committedReadme = committedFiles.find((f) => f.path === 'README.md');
+    assert.ok(committedReadme);
+    assert.strictEqual(committedReadme.content, directUpdate.content);
+  });
+
+  // Case 29: Duplicate license badge cleanup
+  it('29. deduplicates multiple license badges and updates the primary one in place', () => {
+    const multiBadgeReadme = [
+      '# Project Header',
+      '',
+      '[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![License: BSD-3](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)',
+      '',
+      'Body content here.'
+    ].join('\n');
+
+    const updated = smartUpdateReadme(multiBadgeReadme, {
+      license: apache,
+      badgeAction: 'update_badge'
+    });
+
+    // Should contain only one License badge
+    const badgeMatches = updated.match(/img\.shields\.io\/badge\/License-/g) || [];
+    assert.strictEqual(badgeMatches.length, 1);
+    assert.ok(updated.includes('License-Apache--2.0-blue.svg'));
+    assert.strictEqual(updated.includes('License-MIT'), false);
+    assert.strictEqual(updated.includes('License-BSD'), false);
+
+    // Also test: insert_badge_group when a license badge exists updates rather than duplicates
+    const updatedViaInsertGroup = smartUpdateReadme(multiBadgeReadme, {
+      license: apache,
+      badgeAction: 'insert_badge_group'
+    });
+    const groupMatches = updatedViaInsertGroup.match(/img\.shields\.io\/badge\/License-/g) || [];
+    assert.strictEqual(groupMatches.length, 1);
+  });
+
+  // Case 30: Duplicate license section cleanup
+  it('30. cleans up duplicate license sections and updates the primary section', () => {
+    const multiSectionReadme = [
+      '# Dual License Header',
+      '',
+      'Introductory paragraph.',
+      '',
+      '## License',
+      '',
+      'Old MIT terms.',
+      '',
+      '## Other Section',
+      '',
+      'Important info.',
+      '',
+      '## License',
+      '',
+      'Duplicate obsolete license terms.'
+    ].join('\n');
+
+    const updated = smartUpdateReadme(multiSectionReadme, {
+      license: apache,
+      sectionAction: 'update_section'
+    });
+
+    const licenseSections = updated.match(/## License/g) || [];
+    assert.strictEqual(licenseSections.length, 1);
+    assert.ok(updated.includes('Licensed under [Apache License 2.0](LICENSE).'));
+    assert.ok(updated.includes('## Other Section\n\nImportant info.'));
+    assert.strictEqual(updated.includes('Old MIT terms.'), false);
+    assert.strictEqual(updated.includes('Duplicate obsolete license terms.'), false);
+  });
 });
