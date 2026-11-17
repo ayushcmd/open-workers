@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { createFeatureBranch } from '../core/pullRequests/branches.js';
 /**
  * Automated Pull Request Generation Engine
@@ -11,16 +12,24 @@ import { repositoryService } from '../core/repository/service.js';
 import { commitFiles } from '../core/pullRequests/files.js';
 import { inspectRootEntries } from '../../public/js/analyzer.js';
 import { ServiceError, validatePrRequest } from './licenseService.js';
-import { README_PLACEMENTS } from '../../public/js/readme.js';
-import { prepareReadmeUpdate } from './readmeService.js';
+import {
+  README_PLACEMENTS,
+  generateUnifiedDiff,
+  smartUpdateReadme,
+  inspectReadme
+} from '../../public/js/readme.js';
+import { prepareReadmeUpdate, fetchRepositoryReadme } from './readmeService.js';
+
+export { formatLicenseBranchName, buildPullRequestBody };
 
 /**
  * Format a deterministic feature branch name for adding a specific SPDX license.
  *
  * @param {string} licenseId
+ * @param {boolean} [replaceExisting=false]
  * @returns {string}
  */
-export function formatLicenseBranchName(licenseId, replaceExisting = false) {
+function formatLicenseBranchName(licenseId, replaceExisting = false) {
   const slug = String(licenseId)
     .toLowerCase()
     .replace(/[^a-z0-9.-]+/g, '-')
@@ -34,7 +43,7 @@ export function formatLicenseBranchName(licenseId, replaceExisting = false) {
  * @param {object} params
  * @returns {string}
  */
-export function buildPullRequestBody({ explanation, licensePackage, defaultBranch, existingLicensePath, readmeUpdate, readmePlacement }) {
+function buildPullRequestBody({ explanation, licensePackage, defaultBranch, existingLicensePath, readmeUpdate, readmePlacement }) {
   const formatBullets = (items, emptyFallback) => {
     if (!items || items.length === 0) return `- ${emptyFallback}`;
     return items.map((item) => `- **${item.label}:** ${item.description}`).join('\n');
@@ -71,8 +80,15 @@ export function buildPullRequestBody({ explanation, licensePackage, defaultBranc
   ];
 
   if (readmeUpdate) {
-    lines.splice(3, 0, `README: ${readmeUpdate.changed ? 'Updates' : 'Already includes the selected mention in'} \`${readmeUpdate.path}\` (${readmePlacement}).`,
-      ...(readmeUpdate.reviewExisting ? ['Existing README license wording or badges were preserved. Review them for consistency with the selected license.'] : []), '');
+    lines.splice(
+      3,
+      0,
+      `README: ${readmeUpdate.changed ? 'Updates' : 'Already includes the selected mention in'} \`${readmeUpdate.path}\` (${readmePlacement}).`,
+      ...(readmeUpdate.reviewExisting
+        ? ['Existing README license wording or badges were preserved. Review them for consistency with the selected license.']
+        : []),
+      ''
+    );
   }
   return lines.join('\n');
 }
@@ -92,24 +108,240 @@ async function detectExistingLicenseOnBranch(octokit, { owner, repo, defaultBran
   const entries = Array.isArray(contentsResult?.data) ? contentsResult.data : [];
   const rootObservations = inspectRootEntries(entries);
 
-  return [...new Set([
-    ...rootObservations.licenseFiles.map((file) => file.path),
-    ...(licenseResult?.data?.path ? [licenseResult.data.path] : [])
-  ])];
+  return [
+    ...new Set([
+      ...rootObservations.licenseFiles.map((file) => file.path),
+      ...(licenseResult?.data?.path ? [licenseResult.data.path] : [])
+    ])
+  ];
 }
 
 /**
- * Create a feature branch, commit the customized LICENSE file, and open a Pull Request.
+ * Preview the exact changes (files, diff, conflicts, warnings) that would be committed in a License PR.
  *
  * @param {object} params
- * @param {string} params.repo
- * @param {string} params.licenseId
- * @param {string|number} [params.year]
- * @param {string} [params.holder]
- * @param {object} params.githubContext
  * @returns {Promise<object>}
  */
-export async function createLicensePullRequest({ repo: repoInput, licenseId, year, holder, replaceExisting = false, readmePlacement = 'none', githubContext }) {
+export async function previewLicensePullRequest({
+  repo: repoInput,
+  licenseId,
+  year,
+  holder,
+  replaceExisting = false,
+  readmePlacement = 'both',
+  badgeAction,
+  sectionAction,
+  customReadmeContent,
+  githubContext
+}) {
+  if (readmePlacement && !README_PLACEMENTS.includes(readmePlacement)) {
+    throw new ServiceError(400, 'readmePlacement must be none, top, bottom, or both.', 'INVALID_INPUT');
+  }
+  const validated = validatePrRequest({ repo: repoInput, licenseId, year, holder });
+  const { owner, repo, fullName, explanation, licensePackage } = validated;
+
+  let octokit = null;
+  let installed = false;
+
+  if (githubContext?.isAppConfigured && typeof githubContext.resolveRepoInstallation === 'function') {
+    try {
+      const resolution = await githubContext.resolveRepoInstallation(owner, repo);
+      if (resolution?.installed && resolution.octokit) {
+        octokit = resolution.octokit;
+        installed = true;
+      }
+    } catch {
+      // Fall through to public octokit
+    }
+  }
+
+  if (!octokit) {
+    octokit = githubContext?.createPublicOctokit ? githubContext.createPublicOctokit() : null;
+  }
+  if (!octokit) {
+    throw new ServiceError(503, 'GitHub client could not be initialized.', 'SERVICE_UNAVAILABLE');
+  }
+
+  let repoData;
+  try {
+    repoData = await octokit.rest.repos.get({ owner, repo }).then((r) => r.data);
+  } catch (err) {
+    if (err?.status === 404) {
+      throw new ServiceError(404, `Repository "${fullName}" was not found.`, 'NOT_FOUND');
+    }
+    if (err?.status === 403) {
+      throw new ServiceError(403, `Access denied reading metadata for "${fullName}".`, 'INSUFFICIENT_PERMISSIONS');
+    }
+    throw new ServiceError(502, `Failed to load repository details: ${err.message}`, 'GITHUB_API_ERROR');
+  }
+
+  const defaultBranch = repoData.default_branch || 'main';
+  const conflicts = [];
+  const warnings = [];
+
+  if (repoData.archived) {
+    warnings.push(`Repository "${fullName}" is archived and read-only. Pull requests cannot be merged.`);
+  }
+
+  // Inspect existing license
+  let existingLicenses = [];
+  try {
+    existingLicenses = await detectExistingLicenseOnBranch(octokit, { owner, repo, defaultBranch });
+  } catch (err) {
+    warnings.push(`Could not inspect repository license files: ${err.message}`);
+  }
+
+  const existingLicensePath = existingLicenses[0] || null;
+  let existingLicenseSha = null;
+  if (existingLicensePath) {
+    try {
+      const fileRes = await octokit.rest.repos.getContent({ owner, repo, path: existingLicensePath, ref: defaultBranch });
+      existingLicenseSha = fileRes.data?.sha || null;
+    } catch {
+      // Ignore content read error in preview
+    }
+  }
+
+  if (existingLicenses.length > 1) {
+    warnings.push(`Multiple license files found (${existingLicenses.join(', ')}). Manual review is required.`);
+  }
+
+  if (existingLicensePath && !replaceExisting) {
+    conflicts.push({
+      type: 'license_exists',
+      detail: `Repository already contains "${existingLicensePath}". Select "Replace existing license" to update it.`
+    });
+  }
+
+  if (replaceExisting && !existingLicensePath) {
+    conflicts.push({
+      type: 'license_not_found',
+      detail: 'No existing license file found to replace. Select "Add new license" instead.'
+    });
+  }
+
+  // Inspect README
+  let readmeData = { exists: false, path: 'README.md', sha: null, content: '' };
+  try {
+    readmeData = await fetchRepositoryReadme(octokit, { owner, repo, ref: defaultBranch });
+  } catch (err) {
+    if (err.code === 'UNSUPPORTED_README') {
+      warnings.push('README file is not a supported Markdown file.');
+    } else {
+      warnings.push(`Could not read README: ${err.message}`);
+    }
+  }
+
+  const readmeInspection = inspectReadme(readmeData.content, validated.licenseId);
+  for (const c of readmeInspection.conflicts) conflicts.push(c);
+  for (const w of readmeInspection.warnings) warnings.push(w);
+
+  const link = path.posix.relative(path.posix.dirname(readmeData.path), existingLicensePath || licensePackage.filename);
+  let proposedReadme;
+  let readmeChanged = false;
+
+  if (typeof customReadmeContent === 'string') {
+    proposedReadme = customReadmeContent;
+    readmeChanged = proposedReadme !== readmeData.content;
+  } else if (readmePlacement === 'none' && !badgeAction && !sectionAction) {
+    proposedReadme = readmeData.content;
+    readmeChanged = false;
+  } else {
+    proposedReadme = smartUpdateReadme(readmeData.content, {
+      license: { id: validated.licenseId, name: licensePackage.name },
+      licenseLink: link,
+      badgeAction,
+      sectionAction,
+      placement: readmePlacement
+    });
+    readmeChanged = proposedReadme !== readmeData.content;
+  }
+
+  const readmeDiff = generateUnifiedDiff(readmeData.content, proposedReadme, readmeData.path);
+  const targetBranch = formatLicenseBranchName(validated.licenseId, replaceExisting);
+  const title = `chore: ${replaceExisting ? 'replace' : 'add'} ${validated.licenseId} LICENSE`;
+
+  const files = [
+    {
+      path: existingLicensePath || licensePackage.filename,
+      action: replaceExisting ? 'replace' : 'add',
+      sha: existingLicenseSha
+    }
+  ];
+
+  if (readmeChanged) {
+    files.push({
+      path: readmeData.path,
+      action: readmeData.exists ? 'update' : 'create',
+      sha: readmeData.sha
+    });
+  }
+
+  const body = buildPullRequestBody({
+    explanation,
+    licensePackage,
+    defaultBranch,
+    existingLicensePath,
+    readmeUpdate: readmeChanged
+      ? { changed: true, path: readmeData.path, reviewExisting: readmeInspection.conflicts.length > 0 }
+      : null,
+    readmePlacement
+  });
+
+  return {
+    ok: true,
+    repository: fullName,
+    defaultBranch,
+    isArchived: Boolean(repoData.archived),
+    appInstalled: installed,
+    branch: targetBranch,
+    title,
+    body,
+    files,
+    license: {
+      id: validated.licenseId,
+      name: licensePackage.name,
+      action: replaceExisting ? 'replace' : 'add',
+      path: existingLicensePath || licensePackage.filename,
+      sha: existingLicenseSha,
+      content: licensePackage.content
+    },
+    readme: {
+      exists: readmeData.exists,
+      path: readmeData.path,
+      sha: readmeData.sha,
+      originalContent: readmeData.content,
+      proposedContent: proposedReadme,
+      changed: readmeChanged,
+      diff: readmeDiff,
+      inspection: readmeInspection
+    },
+    conflicts,
+    warnings
+  };
+}
+
+/**
+ * Create a feature branch, commit the customized LICENSE file and verified README, and open a Pull Request.
+ *
+ * @param {object} params
+ * @returns {Promise<object>}
+ */
+export async function createLicensePullRequest({
+  repo: repoInput,
+  licenseId,
+  year,
+  holder,
+  replaceExisting = false,
+  readmePlacement = 'none',
+  badgeAction,
+  sectionAction,
+  customReadmeContent,
+  expectedReadmeSha,
+  expectedLicenseSha,
+  confirmed,
+  githubContext
+}) {
   if (!README_PLACEMENTS.includes(readmePlacement)) {
     throw new ServiceError(400, 'readmePlacement must be none, top, bottom, or both.', 'INVALID_INPUT');
   }
@@ -238,23 +470,54 @@ export async function createLicensePullRequest({ repo: repoInput, licenseId, yea
       if (err instanceof ServiceError) throw err;
       throw new ServiceError(502, `Failed to read existing license: ${err.message}`, 'GITHUB_API_ERROR');
     }
+
+    if (expectedLicenseSha !== undefined && expectedLicenseSha !== null && existingFileSha !== expectedLicenseSha) {
+      throw new ServiceError(
+        409,
+        `Repository LICENSE file has been modified since it was inspected (expected ${expectedLicenseSha}, found ${existingFileSha}). Refresh before proceeding.`,
+        'LICENSE_STALE'
+      );
+    }
   }
+
   const action = replaceExisting ? 'replace' : 'add';
   const title = `chore: ${action} ${validated.licenseId} LICENSE`;
+
   const readmeUpdate = await prepareReadmeUpdate(octokit, {
-    owner, repo, ref: baseSha, license: { id: validated.licenseId, name: licensePackage.name },
-    licensePath: existingLicensePath || licensePackage.filename, placement: readmePlacement
+    owner,
+    repo,
+    ref: baseSha,
+    license: { id: validated.licenseId, name: licensePackage.name },
+    licensePath: existingLicensePath || licensePackage.filename,
+    placement: readmePlacement,
+    badgeAction,
+    sectionAction,
+    customReadmeContent,
+    expectedSha: expectedReadmeSha
   });
 
-  const targetBranch = await createFeatureBranch(octokit, { owner, repo, defaultBranch, baseSha,
+  const targetBranch = await createFeatureBranch(octokit, {
+    owner,
+    repo,
+    defaultBranch,
+    baseSha,
     baseBranchName: formatLicenseBranchName(validated.licenseId, replaceExisting)
   });
 
   // Commit generated LICENSE onto the dedicated feature branch
   let commitSha = null;
   try {
-    commitSha = await commitFiles(octokit, { owner, repo, branch: targetBranch, defaultBranch,
-      files: [{ path: existingLicensePath || licensePackage.filename, sha: existingFileSha, message: title, content: licensePackage.content }]
+    commitSha = await commitFiles(octokit, {
+      owner,
+      repo,
+      branch: targetBranch,
+      defaultBranch,
+      files: [{
+        path: existingLicensePath || licensePackage.filename,
+        sha: existingFileSha,
+        message: title,
+        content: licensePackage.content
+      }]
     });
   } catch (err) {
     if (err?.status === 403 || err?.status === 404) {
@@ -269,16 +532,37 @@ export async function createLicensePullRequest({ repo: repoInput, licenseId, yea
 
   if (readmeUpdate?.changed) {
     try {
-      commitSha = await commitFiles(octokit, { owner, repo, branch: targetBranch, defaultBranch,
-        files: [{ path: readmeUpdate.path, sha: readmeUpdate.sha, message: `docs: mention ${validated.licenseId} in README`, content: readmeUpdate.content }]
-      }) || commitSha;
+      commitSha =
+        (await commitFiles(octokit, {
+          owner,
+          repo,
+          branch: targetBranch,
+          defaultBranch,
+          files: [{
+            path: readmeUpdate.path,
+            sha: readmeUpdate.sha,
+            message: `docs: mention ${validated.licenseId} in README`,
+            content: readmeUpdate.content
+          }]
+        })) || commitSha;
     } catch (err) {
-      throw new ServiceError(502, `License was committed on feature branch "${targetBranch}", but README update failed; no PR was opened. ${err.message}`, 'README_WRITE_FAILED');
+      throw new ServiceError(
+        502,
+        `License was committed on feature branch "${targetBranch}", but README update failed; no PR was opened. ${err.message}`,
+        'README_WRITE_FAILED'
+      );
     }
   }
 
-  // Open Pull Request only after both requested file updates succeed.
-  const body = buildPullRequestBody({ explanation, licensePackage, defaultBranch, existingLicensePath, readmeUpdate, readmePlacement });
+  // Open Pull Request only after file updates succeed
+  const body = buildPullRequestBody({
+    explanation,
+    licensePackage,
+    defaultBranch,
+    existingLicensePath,
+    readmeUpdate,
+    readmePlacement
+  });
 
   try {
     const prRes = await octokit.rest.pulls.create({
@@ -315,4 +599,3 @@ export async function createLicensePullRequest({ repo: repoInput, licenseId, yea
     throw new ServiceError(502, `Failed to open pull request: ${err.message}`, 'GITHUB_API_ERROR');
   }
 }
-

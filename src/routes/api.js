@@ -70,7 +70,10 @@ import {
   analyzeRepositoryServer,
   validateRecommendationRequest
 } from '../services/licenseService.js';
-import { createLicensePullRequest } from '../services/prService.js';
+import {
+  createLicensePullRequest,
+  previewLicensePullRequest
+} from '../services/prService.js';
 
 function withServiceErrorHandling(handler) {
   return async (req, res, next) => {
@@ -641,6 +644,27 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
     })
   );
 
+  const handleLicensePreview = withServiceErrorHandling(async (req, res) => {
+    const preview = await previewLicensePullRequest({
+      repo: req.body?.repo,
+      licenseId: req.body?.licenseId,
+      year: req.body?.year,
+      holder: req.body?.holder,
+      replaceExisting: req.body?.replaceExisting,
+      readmePlacement: req.body?.readmePlacement,
+      badgeAction: req.body?.badgeAction,
+      sectionAction: req.body?.sectionAction,
+      customReadmeContent: req.body?.customReadmeContent,
+      githubContext,
+      authorization: req.get('authorization'),
+      createUserClient
+    });
+    res.json(preview);
+  });
+
+  router.post('/preview-pr', handleLicensePreview);
+  router.post('/licensing/preview-pr', handleLicensePreview);
+
   router.post(
     '/trigger-pr',
     withServiceErrorHandling(async (req, res) => {
@@ -658,6 +682,12 @@ export function createApiRouter({ githubContext, env = process.env, createUserCl
         holder: req.body?.holder,
         replaceExisting: req.body?.replaceExisting,
         readmePlacement: req.body?.readmePlacement,
+        badgeAction: req.body?.badgeAction,
+        sectionAction: req.body?.sectionAction,
+        customReadmeContent: req.body?.customReadmeContent,
+        expectedReadmeSha: req.body?.expectedReadmeSha,
+        expectedLicenseSha: req.body?.expectedLicenseSha,
+        confirmed: req.body?.confirmed,
         githubContext
       });
       res.status(201).json(result);
